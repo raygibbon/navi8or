@@ -1,21 +1,161 @@
 #include "nav.h"
-#include <ctype.h>
 #include "nav_terminal.h"
-#include <stdio.h>
+#include "nav_theme.h"
+#include "nav_ui.h"
+#include "tdxui.h"
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
-enum { NAV_CLR_NORMAL=1,NAV_CLR_MENU,NAV_CLR_ACTIVE,NAV_CLR_SELECT,NAV_CLR_DIALOG };
-static void init_colors(void){start_color();use_default_colors();init_pair(NAV_CLR_NORMAL,COLOR_WHITE,COLOR_BLUE);init_pair(NAV_CLR_MENU,COLOR_YELLOW,COLOR_BLUE);init_pair(NAV_CLR_ACTIVE,COLOR_CYAN,COLOR_BLACK);init_pair(NAV_CLR_SELECT,COLOR_BLACK,COLOR_CYAN);init_pair(NAV_CLR_DIALOG,COLOR_YELLOW,COLOR_BLUE);}
-static void line(int y,int x,int width,const char*s,int pair){attrset(COLOR_PAIR(pair));mvhline(y,x,' ',width);mvaddnstr(y,x,s,width);}
-static void draw_pane(const NavPane*p,int x,int y,int w,int h,bool active){char title[NAV_PATH_MAX+8],entry[512];int visible=0,row=0;snprintf(title,sizeof title," %s ",p->path);attrset(COLOR_PAIR(active?NAV_CLR_ACTIVE:NAV_CLR_NORMAL));mvaddch(y,x,ACS_ULCORNER);mvhline(y,x+1,ACS_HLINE,w-2);mvaddch(y,x+w-1,ACS_URCORNER);mvaddnstr(y,x+2,title,w-4);for(int i=1;i<h-1;i++){mvaddch(y+i,x,ACS_VLINE);mvaddch(y+i,x+w-1,ACS_VLINE);}mvaddch(y+h-1,x,ACS_LLCORNER);mvhline(y+h-1,x+1,ACS_HLINE,w-2);mvaddch(y+h-1,x+w-1,ACS_LRCORNER);
- for(size_t i=0;i<p->listing.count;i++){const NavEntry*e=&p->listing.items[i];if(p->filter[0]&&!strstr(e->name,p->filter))continue;if(visible++<p->offset)continue;if(row>=h-2)break;snprintf(entry,sizeof entry,"%-*.*s",w-2,w-2,e->name);line(y+1+row,x+1,w-2,(visible-1==p->selected)?entry:entry,(active&&visible-1==p->selected)?NAV_CLR_SELECT:NAV_CLR_NORMAL);row++;} }
-static void draw(NavApp*a){int rows,cols,ph;getmaxyx(stdscr,rows,cols);erase();line(0,0,cols," File   View   Search   Transfer   Repo   Vault   Options   Help",NAV_CLR_MENU);ph=rows-4;draw_pane(&a->panes[0],0,1,cols/2,ph,a->active==0);draw_pane(&a->panes[1],cols/2,1,cols-cols/2,ph,a->active==1);if(a->panes[a->active].filter[0]){char f[300];snprintf(f,sizeof f," Filter: %s",a->panes[a->active].filter);line(rows-3,0,cols,f,NAV_CLR_DIALOG);}else line(rows-3,0,cols,a->status,NAV_CLR_NORMAL);line(rows-2,0,cols," F1 Help  F3 View  F4 Edit  F5 Copy  F6 Move  F7 MkDir  F8 Delete",NAV_CLR_MENU);line(rows-1,0,cols," F9 Menu  F10 Quit     Tab Switch     / Filter     Alt-Left/Right History",NAV_CLR_MENU);refresh();}
-static int prompt(const char*label,char*out,size_t n){int rows,cols,c;size_t len=0;getmaxyx(stdscr,rows,cols);memset(out,0,n);for(;;){char b[512];snprintf(b,sizeof b," %s%s",label,out);line(rows/2,cols/4,cols/2,b,NAV_CLR_DIALOG);move(rows/2,cols/4+(int)strlen(label)+1+(int)len);c=getch();if(c==27)return -1;if(c=='\n'||c==KEY_ENTER)return 0;if((c==KEY_BACKSPACE||c==127)&&len){out[--len]=0;}else if(isprint(c)&&len+1<n){out[len++]=(char)c;out[len]=0;}}}
-static void message(NavApp*a,const char*s){size_t n=strnlen(s,sizeof a->status-2);a->status[0]=' ';memcpy(a->status+1,s,n);a->status[n+1]=0;}
-static void viewer(const NavEntry*e){FILE*f=fopen(e->path,"rb");char **lines=NULL,*buf=NULL;size_t cap=0,count=0;int ch,top=0,rows,cols;if(!f)return;for(;;){char temp[2048];if(!fgets(temp,sizeof temp,f))break;if(memchr(temp,0,strlen(temp))){fclose(f);endwin();printf("%s is binary\n",e->path);return;}if(count==cap){cap=cap?cap*2:128;lines=realloc(lines,cap*sizeof *lines);}lines[count++]=strdup(temp);}fclose(f);(void)buf;for(;;){getmaxyx(stdscr,rows,cols);erase();line(0,0,cols,e->path,NAV_CLR_MENU);for(int i=0;i<rows-2&&top+i<(int)count;i++){char n[16];snprintf(n,sizeof n,"%6d ",top+i+1);line(i+1,0,cols,n,NAV_CLR_MENU);mvaddnstr(i+1,7,lines[top+i],cols-8);}line(rows-1,0,cols," Esc Back   / Find   Up/Down Scroll",NAV_CLR_MENU);refresh();ch=getch();if(ch==27)break;if(ch==KEY_DOWN&&top+1<(int)count)top++;if(ch==KEY_UP&&top)top--;if(ch=='/'){char q[128];if(!prompt("Find: ",q,sizeof q))for(size_t i=(size_t)top+1;i<count;i++)if(strstr(lines[i],q)){top=(int)i;break;}}}for(size_t i=0;i<count;i++)free(lines[i]);free(lines);}
-static void operate(NavApp*a,int key){NavPane*p=&a->panes[a->active],*other=&a->panes[!a->active];const NavEntry*e=nav_pane_selected(p);char input[NAV_PATH_MAX],dest[NAV_PATH_MAX],err[256];if(!e){return;}if(key==KEY_F(3)){if(e->flags&NAV_ENTRY_DIR)message(a,"Cannot view a directory");else viewer(e);return;}if(key==KEY_F(4)){endwin();char cmd[NAV_PATH_MAX+16];snprintf(cmd,sizeof cmd,"tdx '%s'",e->path);system(cmd);refresh();return;}if(key==KEY_F(5)){snprintf(input,sizeof input,"Copy to [%s]: ",other->path);if(!prompt(input,dest,sizeof dest)&&nav_path_join(other->path,dest[0]?dest:nav_path_basename(e->path),input,sizeof input)==0){if(p->provider->copy(p->provider,e->path,input,err,sizeof err))message(a,err);else{message(a,"Copy complete");nav_pane_load(other,other->path,a->show_hidden,false,err,sizeof err);}}return;}if(key==KEY_F(6)){if(!prompt("Rename to: ",dest,sizeof dest)&&dest[0]&&!nav_path_join(p->path,dest,input,sizeof input)){if(p->provider->rename_path(p->provider,e->path,input,err,sizeof err))message(a,err);else nav_pane_load(p,p->path,a->show_hidden,false,err,sizeof err);}return;}if(key==KEY_F(7)){if(!prompt("Directory name: ",dest,sizeof dest)&&dest[0]&&!nav_path_join(p->path,dest,input,sizeof input)){if(p->provider->mkdir(p->provider,input,err,sizeof err))message(a,err);else nav_pane_load(p,p->path,a->show_hidden,false,err,sizeof err);}return;}if(key==KEY_F(8)){if(!prompt("Delete? Type yes: ",dest,sizeof dest)&&!strcmp(dest,"yes")){if(p->provider->remove(p->provider,e->path,err,sizeof err))message(a,err);else nav_pane_load(p,p->path,a->show_hidden,false,err,sizeof err);}return;}}
-int nav_ui_run(NavApp*a){int key;initscr();cbreak();noecho();keypad(stdscr,TRUE);init_colors();curs_set(0);message(a,"Ready");while(a->running){NavPane*p=&a->panes[a->active];draw(a);key=getch();if(key==KEY_F(10)){a->running=false;continue;}if(key=='\t'){a->active=!a->active;continue;}if(key==KEY_ALT_LEFT||key==KEY_ALT_RIGHT||key==KEY_ALT_UP){const char *target=key==KEY_ALT_LEFT?nav_history_back(&p->history):key==KEY_ALT_RIGHT?nav_history_forward(&p->history):NULL;char parent[NAV_PATH_MAX],er[256];if(key==KEY_ALT_UP){nav_path_parent(p->path,parent,sizeof parent);target=parent;}if(target&&nav_pane_load(p,target,a->show_hidden,false,er,sizeof er))message(a,er);continue;}if(key==KEY_F(9)){message(a,"File View Search Transfer Repo Vault Options Help (menu placeholders)");continue;}if(key=='/'){char f[NAV_NAME_MAX];if(!prompt("Filter: ",f,sizeof f))snprintf(p->filter,sizeof p->filter,"%s",f);continue;}if(key==27){p->filter[0]=0;continue;}if(key==KEY_UP&&p->selected)p->selected--;else if(key==KEY_DOWN&&p->selected+1<nav_pane_visible_count(p))p->selected++;else if(key==KEY_HOME)p->selected=0;else if(key==KEY_END)p->selected=nav_pane_visible_count(p)-1;else if(key==KEY_PPAGE)p->selected=p->selected>10?p->selected-10:0;else if(key==KEY_NPAGE){int n=nav_pane_visible_count(p);p->selected=p->selected+10<n?p->selected+10:n-1;}else if(key==KEY_BACKSPACE||key==127){char parent[NAV_PATH_MAX],er[256];nav_path_parent(p->path,parent,sizeof parent);if(nav_pane_load(p,parent,a->show_hidden,true,er,sizeof er))message(a,er);}else if(key=='\n'||key==KEY_ENTER){const NavEntry*e=nav_pane_selected(p);char er[256];if(e&&(e->flags&NAV_ENTRY_DIR)){char target[NAV_PATH_MAX];if(e->flags&NAV_ENTRY_PARENT)nav_path_parent(p->path,target,sizeof target);else snprintf(target,sizeof target,"%s",e->path);if(nav_pane_load(p,target,a->show_hidden,true,er,sizeof er))message(a,er);}else if(e)viewer(e);}else if(key==KEY_F(3)||key==KEY_F(4)||key==KEY_F(5)||key==KEY_F(6)||key==KEY_F(7)||key==KEY_F(8))operate(a,key);else if(key==12){char er[256];nav_pane_load(p,p->path,a->show_hidden,false,er,sizeof er);} }endwin();return 0;}
+typedef enum { CMD_NONE, CMD_VIEW, CMD_EDIT, CMD_COPY, CMD_MOVE, CMD_DELETE,
+               CMD_MKDIR, CMD_QUIT, CMD_REFRESH, CMD_HIDDEN, CMD_SORT_NAME,
+               CMD_SORT_SIZE, CMD_SORT_DATE, CMD_FILTER, CMD_HELP, CMD_ABOUT } Command;
+
+static void draw_app(void *data);
+static void dispatch(NavApp *app, Command command);
+
+static void set_status(NavApp *app,const char *message){snprintf(app->status,sizeof app->status," %.*s",(int)sizeof app->status-2,message);}
+
+static bool entry_visible(const NavPane *pane,const NavEntry *entry){return pane->filter[0]==0||strstr(entry->name,pane->filter)!=NULL;}
+
+static void draw_pane(NavPane *pane,int x,int y,int width,int height,bool active){
+    char title[NAV_PATH_MAX+32],row[512];
+    int visible=0,line=0;
+    nav_pane_ensure_visible(pane,height-2);
+    snprintf(title,sizeof title," %s [%s] ",pane->path,pane->sort_mode==NAV_SORT_SIZE?"size":pane->sort_mode==NAV_SORT_DATE?"date":"name");
+    nav_ui_box(x,y,width,height,title,active?NAV_STYLE_ACTIVE:NAV_STYLE_NORMAL);
+    for(size_t i=0;i<pane->listing.count&&line<height-2;i++){
+        NavEntry *entry=&pane->listing.items[i];
+        if(!entry_visible(pane,entry))continue;
+        if(visible++<pane->offset)continue;
+        snprintf(row,sizeof row,"%-*.*s",width-2,width-2,entry->name);
+        nav_ui_text(x+1,y+1+line++,width-2,row,active&&visible-1==pane->selected?NAV_STYLE_SELECTED:NAV_STYLE_NORMAL);
+    }
+    if(nav_pane_visible_count(pane)==0)nav_ui_text(x+2,y+2,width-4,"(no matches)",NAV_STYLE_NORMAL);
+}
+
+static void draw_app(void *data){
+    NavApp *app=data;
+    int width=nav_term_width(),height=nav_term_height(),pane_height=height-3;
+    nav_term_clear(NAV_STYLE_NORMAL);
+    if(width<20||height<8){nav_ui_text(0,0,width,"Terminal too small",NAV_STYLE_MENU);return;}
+    draw_pane(&app->panes[0],0,0,width/2,pane_height,app->active==0);
+    draw_pane(&app->panes[1],width/2,0,width-width/2,pane_height,app->active==1);
+    if(app->panes[app->active].filter[0]){char filter[300];snprintf(filter,sizeof filter," Filter: %s",app->panes[app->active].filter);nav_ui_text(0,height-3,width,filter,NAV_STYLE_DIALOG);}else{const NavEntry*entry=nav_pane_selected(&app->panes[app->active]);if(entry){char status[512],date[32];struct tm tm_value;localtime_r(&entry->modified,&tm_value);strftime(date,sizeof date,"%Y-%m-%d %H:%M",&tm_value);snprintf(status,sizeof status," %.*s   %llu bytes   %s",420,entry->path,(unsigned long long)entry->size,date);nav_ui_text(0,height-3,width,status,NAV_STYLE_NORMAL);}else nav_ui_text(0,height-3,width,app->status,NAV_STYLE_NORMAL);}
+    nav_ui_text(0,height-2,width," F1 Help  F3 View  F4 Edit  F5 Copy  F6 Move  F7 MkDir  F8 Delete",NAV_STYLE_MENU);
+    nav_ui_text(0,height-1,width," Ctrl+\\ Menu   F9 alias   F10 Quit   Tab Switch   / Filter",NAV_STYLE_MENU);
+    nav_term_hide_cursor();
+}
+
+static void present_app(NavApp *app){draw_app(app);nav_term_present();}
+
+static void restore_selection(NavPane *pane,const char *path){int visible=0;for(size_t i=0;i<pane->listing.count;i++)if(entry_visible(pane,&pane->listing.items[i])){if(!strcmp(path,pane->listing.items[i].path)){pane->selected=visible;break;}visible++;}nav_pane_clamp_selection(pane);nav_pane_ensure_visible(pane,nav_term_height()-5);}
+
+static void refresh_pane(NavApp *app,NavPane *pane){char selected[NAV_PATH_MAX]={0},path[NAV_PATH_MAX],error[256];const NavEntry *entry=nav_pane_selected(pane);if(entry)snprintf(selected,sizeof selected,"%s",entry->path);snprintf(path,sizeof path,"%s",pane->path);if(nav_pane_load(pane,path,app->show_hidden,false,error,sizeof error)){set_status(app,error);return;}nav_pane_sort(pane,pane->sort_mode);if(selected[0])restore_selection(pane,selected);}
+
+static void show_help(void){
+    static const char *lines[]={
+        "NAV Keys","","Pane navigation",
+        "  Tab          Switch pane",
+        "  Up/Down      Move selection",
+        "  Home/End     First/last item",
+        "  PgUp/PgDn    Page movement",
+        "  Enter        Open",
+        "  Backspace    Parent",
+        "  Alt+Left     History back",
+        "  Alt+Right    History forward",
+        "  Alt+Up       Parent","","Files",
+        "  F3           View",
+        "  F4           Edit in TDX",
+        "  F5           Copy",
+        "  F6           Move/Rename",
+        "  F7           Make directory",
+        "  F8           Delete",
+        "  F10          Quit","","Menus",
+        "  Ctrl+\\       Open menu (F9 alias)",
+        "  Ctrl+Right   Next top-level menu",
+        "  Ctrl+Left    Previous top-level menu",
+        "  Up/Down      Select command",
+        "  Enter        Run command",
+        "  Esc          Close menu","","Viewer and Help",
+        "  /            Find/filter",
+        "  Home/End     Top/bottom",
+        "  PgUp/PgDn    Scroll by page",
+        "  Esc          Return"
+    };
+    nav_info(" Help ",lines,sizeof lines/sizeof *lines);
+}
+
+typedef struct { NavApp *app; const char *name; uint64_t done,total; } ProgressContext;
+static void draw_progress(uint64_t done,uint64_t total,void *data){ProgressContext*c=data;NavTermEvent event;while(nav_term_poll_event(&event,0)>0){if(event.type==NAV_TERM_EVENT_RESIZE)continue;}int width=nav_term_width(),height=nav_term_height(),box_width=width>64?64:width-2,bar_width=box_width-8,percent=total?(int)(done*100/total):100,filled=total?(int)(done*(uint64_t)bar_width/total):bar_width;char line[256],bar[128];c->done=done;c->total=total;draw_app(c->app);if(width<20||height<8){nav_term_present();return;}nav_ui_box((width-box_width)/2,height/2-3,box_width,7," Copying ",NAV_STYLE_DIALOG);nav_ui_text((width-box_width)/2+2,height/2-2,box_width-4,c->name,NAV_STYLE_DIALOG);memset(bar,'-',(size_t)bar_width);for(int i=0;i<filled&&i<bar_width;i++)bar[i]='=';bar[bar_width]=0;snprintf(line,sizeof line,"[%s] %d%%",bar,percent);nav_ui_text((width-box_width)/2+2,height/2,box_width-4,line,NAV_STYLE_DIALOG);snprintf(line,sizeof line,"%llu / %llu bytes",(unsigned long long)done,(unsigned long long)total);nav_ui_text((width-box_width)/2+2,height/2+2,box_width-4,line,NAV_STYLE_DIALOG);nav_term_present();}
+
+static void command_copy(NavApp *app){NavPane*source=&app->panes[app->active],*destination=&app->panes[!app->active];const NavEntry*entry=nav_pane_selected(source);char target[NAV_PATH_MAX],label[NAV_PATH_MAX+32],error[256];NavEntry existing;bool overwrite=false;if(!entry){set_status(app,"No selected entry");return;}if(entry->flags&NAV_ENTRY_DIR){set_status(app,"Directory copy is not implemented");return;}if(nav_path_join(destination->path,nav_path_basename(entry->path),target,sizeof target)){set_status(app,"Destination path is too long");return;}snprintf(label,sizeof label,"To: ");if(nav_prompt_text(" Copy ",label,target,sizeof target,draw_app,app))return;if(!destination->provider->stat(destination->provider,target,&existing,error,sizeof error)){char question[NAV_NAME_MAX+32];snprintf(question,sizeof question,"Overwrite \"%.*s\"?",NAV_NAME_MAX-16,existing.name);if(!nav_confirm(question,draw_app,app))return;overwrite=true;}ProgressContext progress={app,entry->name,0,entry->size};if(nav_transfer_copy(source->provider,entry->path,destination->provider,target,overwrite,draw_progress,&progress,error,sizeof error))set_status(app,error);else set_status(app,"Copy complete");refresh_pane(app,destination);}
+
+static void command_move(NavApp *app){NavPane*source=&app->panes[app->active],*destination=&app->panes[!app->active];const NavEntry*entry=nav_pane_selected(source);char target[NAV_PATH_MAX],error[256];if(!entry){set_status(app,"No selected entry");return;}if(nav_path_join(destination->path,nav_path_basename(entry->path),target,sizeof target)){set_status(app,"Destination path is too long");return;}if(nav_prompt_text(" Move / Rename ","To: ",target,sizeof target,draw_app,app))return;if(source->provider->rename_path(source->provider,entry->path,target,error,sizeof error))set_status(app,error);else set_status(app,"Move complete");refresh_pane(app,source);refresh_pane(app,destination);}
+
+static void command_mkdir(NavApp *app){NavPane*pane=&app->panes[app->active];char name[NAV_NAME_MAX]={0},path[NAV_PATH_MAX],error[256];if(nav_prompt_text(" Create Directory ","Name: ",name,sizeof name,draw_app,app)||!name[0])return;if(nav_path_join(pane->path,name,path,sizeof path)){set_status(app,"Directory path is too long");return;}if(pane->provider->mkdir(pane->provider,path,error,sizeof error))set_status(app,error);else set_status(app,"Directory created");refresh_pane(app,pane);}
+
+static void command_delete(NavApp *app){NavPane*pane=&app->panes[app->active];const NavEntry*entry=nav_pane_selected(pane);char question[NAV_NAME_MAX+32],error[256];if(!entry||entry->flags&NAV_ENTRY_PARENT)return;snprintf(question,sizeof question,"Delete \"%.*s\"?",NAV_NAME_MAX-16,entry->name);if(!nav_confirm(question,draw_app,app))return;if(pane->provider->remove(pane->provider,entry->path,error,sizeof error))set_status(app,error);else set_status(app,"Deleted");refresh_pane(app,pane);}
+
+static void command_filter(NavApp *app){NavPane*pane=&app->panes[app->active];char original[NAV_NAME_MAX];snprintf(original,sizeof original,"%s",pane->filter);if(nav_prompt_text(" Filter ","Filter: ",pane->filter,sizeof pane->filter,draw_app,app)){snprintf(pane->filter,sizeof pane->filter,"%s",original);}nav_pane_clamp_selection(pane);nav_pane_ensure_visible(pane,nav_term_height()-5);}
+
+static void command_edit(NavApp *app){const NavEntry*entry=nav_pane_selected(&app->panes[app->active]);char error[256];if(!entry||entry->flags&NAV_ENTRY_DIR)return;nav_term_shutdown();if(nav_platform_launch_tdx(entry->path,error,sizeof error))set_status(app,error);nav_term_set_theme(nav_theme_classic_dos());if(nav_term_init()<0){set_status(app,"Unable to resume terminal");app->running=false;}}
+
+static void dispatch(NavApp *app,Command command){NavPane*pane=&app->panes[app->active];switch(command){case CMD_VIEW:{const NavEntry*entry=nav_pane_selected(pane);if(entry&&!(entry->flags&NAV_ENTRY_DIR))nav_view_file(entry);break;}case CMD_EDIT:command_edit(app);break;case CMD_COPY:command_copy(app);break;case CMD_MOVE:command_move(app);break;case CMD_DELETE:command_delete(app);break;case CMD_MKDIR:command_mkdir(app);break;case CMD_QUIT:app->running=false;break;case CMD_REFRESH:refresh_pane(app,pane);break;case CMD_HIDDEN:app->show_hidden=!app->show_hidden;refresh_pane(app,&app->panes[0]);refresh_pane(app,&app->panes[1]);break;case CMD_SORT_NAME:nav_pane_sort(pane,NAV_SORT_NAME);break;case CMD_SORT_SIZE:nav_pane_sort(pane,NAV_SORT_SIZE);break;case CMD_SORT_DATE:nav_pane_sort(pane,NAV_SORT_DATE);break;case CMD_FILTER:command_filter(app);break;case CMD_HELP:show_help();break;case CMD_ABOUT:{const char*lines[]={"NAV 0.1","Keyboard-first local navigator","TDX/TDE interaction and visual conventions"};nav_info(" About NAV ",lines,3);break;}default:break;}}
+
+#define ITEM(label,command,key) {label,command,NULL,false,false,key}
+#define DISABLED(label,key) {label,CMD_NONE,NULL,true,false,key}
+#define SEPARATOR {NULL,CMD_NONE,NULL,true,true,0}
+static const TdxUiMenuItem file_items[]={ITEM("View",CMD_VIEW,'v'),ITEM("Edit",CMD_EDIT,'e'),ITEM("Copy",CMD_COPY,'c'),ITEM("Move/Rename",CMD_MOVE,'m'),ITEM("Delete",CMD_DELETE,'d'),ITEM("Make Directory",CMD_MKDIR,'a'),SEPARATOR,ITEM("Quit",CMD_QUIT,'q')};
+static const TdxUiMenuItem view_items[]={ITEM("Refresh",CMD_REFRESH,'r'),ITEM("Show Hidden",CMD_HIDDEN,'h'),SEPARATOR,ITEM("Sort By Name",CMD_SORT_NAME,'n'),ITEM("Sort By Size",CMD_SORT_SIZE,'s'),ITEM("Sort By Date",CMD_SORT_DATE,'d')};
+static const TdxUiMenuItem search_items[]={ITEM("Filter",CMD_FILTER,'f'),DISABLED("Find File",'i'),DISABLED("Search Contents",'c')};
+static const TdxUiMenuItem unavailable_items[]={DISABLED("Not available in local v0.1",'n')};
+static const TdxUiMenuItem help_items[]={ITEM("Keys",CMD_HELP,'k'),ITEM("About NAV",CMD_ABOUT,'a')};
+static TdxUiMenu menus[]={{"File",file_items,sizeof file_items/sizeof *file_items,0},{"View",view_items,sizeof view_items/sizeof *view_items,0},{"Search",search_items,sizeof search_items/sizeof *search_items,0},{"Transfer",unavailable_items,1,0},{"Repo",unavailable_items,1,0},{"Vault",unavailable_items,1,0},{"Options",unavailable_items,1,0},{"Help",help_items,sizeof help_items/sizeof *help_items,0}};
+static int saved_major_menu;
+static void open_menu(NavApp *app){int command=tdxui_pull_down(menus,sizeof menus/sizeof *menus,&saved_major_menu,draw_app,app);if(command>=0)dispatch(app,(Command)command);}
+
+static void navigate_parent(NavApp *app,NavPane *pane,bool history){char parent[NAV_PATH_MAX],error[256]={0};if(nav_path_parent(pane->path,parent,sizeof parent)==0&&nav_pane_load(pane,parent,app->show_hidden,history,error,sizeof error)==0)nav_pane_sort(pane,pane->sort_mode);else if(error[0])set_status(app,error);}
+static void activate(NavApp *app,NavPane *pane){const NavEntry*entry=nav_pane_selected(pane);char error[256];if(!entry)return;if(!(entry->flags&NAV_ENTRY_DIR)){dispatch(app,CMD_VIEW);return;}if(entry->flags&NAV_ENTRY_PARENT){navigate_parent(app,pane,true);return;}if(nav_pane_load(pane,entry->path,app->show_hidden,true,error,sizeof error))set_status(app,error);else nav_pane_sort(pane,pane->sort_mode);}
+
+int nav_ui_run(NavApp *app){
+    nav_term_set_theme(nav_theme_classic_dos());
+    if(nav_term_init()<0){fprintf(stderr,"nav: terminal initialization failed\n");return 1;}
+    set_status(app,"Ready");
+    while(app->running){
+        NavTermEvent event;
+        NavPane *pane=&app->panes[app->active];
+        present_app(app);
+        if(nav_term_poll_event(&event,-1)<=0)continue;
+        if(event.type==NAV_TERM_EVENT_RESIZE){for(int i=0;i<2;i++){nav_pane_clamp_selection(&app->panes[i]);nav_pane_ensure_visible(&app->panes[i],nav_term_height()-5);}continue;}
+        if(event.type!=NAV_TERM_EVENT_KEY)continue;
+        int key=event.key;
+        if(key==NAV_KEY_F10)dispatch(app,CMD_QUIT);
+        else if(key==NAV_KEY_F1)dispatch(app,CMD_HELP);
+        else if(key==NAV_KEY_F3)dispatch(app,CMD_VIEW);
+        else if(key==NAV_KEY_F4)dispatch(app,CMD_EDIT);
+        else if(key==NAV_KEY_F5)dispatch(app,CMD_COPY);
+        else if(key==NAV_KEY_F6)dispatch(app,CMD_MOVE);
+        else if(key==NAV_KEY_F7)dispatch(app,CMD_MKDIR);
+        else if(key==NAV_KEY_F8)dispatch(app,CMD_DELETE);
+        else if(key==NAV_KEY_F9||(key=='\\'&&(event.modifiers&NAV_MOD_CTRL)))open_menu(app);
+        else if(key==NAV_KEY_TAB)app->active=!app->active;
+        else if(key=='/')dispatch(app,CMD_FILTER);
+        else if(key==NAV_KEY_UP&&(event.modifiers&NAV_MOD_ALT))navigate_parent(app,pane,true);
+        else if(key==NAV_KEY_LEFT&&(event.modifiers&NAV_MOD_ALT)){const char*path=nav_history_back(&pane->history);char error[256];if(path&&nav_pane_load(pane,path,app->show_hidden,false,error,sizeof error)==0)nav_pane_sort(pane,pane->sort_mode);}
+        else if(key==NAV_KEY_RIGHT&&(event.modifiers&NAV_MOD_ALT)){const char*path=nav_history_forward(&pane->history);char error[256];if(path&&nav_pane_load(pane,path,app->show_hidden,false,error,sizeof error)==0)nav_pane_sort(pane,pane->sort_mode);}
+        else if(key==NAV_KEY_UP)pane->selected--;
+        else if(key==NAV_KEY_DOWN)pane->selected++;
+        else if(key==NAV_KEY_HOME)pane->selected=0;
+        else if(key==NAV_KEY_END)pane->selected=nav_pane_visible_count(pane)-1;
+        else if(key==NAV_KEY_PAGE_UP)pane->selected-=nav_term_height()-5;
+        else if(key==NAV_KEY_PAGE_DOWN)pane->selected+=nav_term_height()-5;
+        else if(key==NAV_KEY_BACKSPACE)navigate_parent(app,pane,true);
+        else if(key==NAV_KEY_ENTER)activate(app,pane);
+        nav_pane_clamp_selection(pane);
+        nav_pane_ensure_visible(pane,nav_term_height()-5);
+    }
+    nav_term_shutdown();
+    return 0;
+}
