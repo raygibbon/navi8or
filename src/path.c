@@ -5,6 +5,16 @@
 
 bool nav_path_is_absolute(const char *p) { return p != NULL && p[0] == '/'; }
 const char *nav_path_basename(const char *p) { const char *s = strrchr(p, '/'); return s ? s + 1 : p; }
+bool nav_leaf_name_copy(char output[NAV_NAME_MAX], const char *name) {
+    size_t length;
+    if (!output || !name || !name[0])
+        return false;
+    length = strlen(name);
+    if (length >= NAV_NAME_MAX)
+        return false;
+    memcpy(output, name, length + 1);
+    return true;
+}
 int nav_path_normalize(const char *in, char *out, size_t n) {
     char work[NAV_PATH_MAX], *parts[512], *tok, *save = NULL; size_t count = 0, used = 0;
     if (in == NULL || out == NULL || n == 0) return -1;

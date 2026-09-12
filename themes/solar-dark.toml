@@ -1,0 +1,146 @@
+[theme]
+format = 2
+name = "Solar Dark"
+
+[ui]
+style = "modern"
+
+[ui.header]
+foreground = "light_cyan"
+background = "black"
+
+[ui.status]
+foreground = "dark_gray"
+background = "black"
+
+[ui.message]
+foreground = "light_cyan"
+background = "black"
+
+[ui.text]
+foreground = "light_gray"
+background = "black"
+
+[ui.accent]
+foreground = "cyan"
+background = "black"
+
+[ui.surface_alt]
+foreground = "light_gray"
+background = "dark_gray"
+
+[ui.dialog]
+foreground = "light_gray"
+background = "dark_gray"
+
+[ui.dialog_title]
+foreground = "light_cyan"
+background = "dark_gray"
+
+[ui.text_dim]
+foreground = "dark_gray"
+background = "black"
+
+[ui.selection]
+foreground = "black"
+background = "cyan"
+
+[ui.keybar]
+foreground = "light_gray"
+background = "black"
+
+[ui.keybar_selected]
+foreground = "black"
+background = "cyan"
+
+[ui.keybar_key]
+foreground = "black"
+background = "cyan"
+
+[ui.keybar_disabled]
+foreground = "dark_gray"
+background = "black"
+
+[ui.menu]
+foreground = "light_gray"
+background = "black"
+
+[ui.menu_disabled]
+foreground = "dark_gray"
+background = "black"
+
+[ui.menu_selected]
+foreground = "black"
+background = "cyan"
+
+[ui.menu_selected_disabled]
+foreground = "dark_gray"
+background = "cyan"
+
+[ui.frame]
+style = "single"
+space = false
+shadow = false
+
+[ui.viewer_line_number]
+foreground = "dark_gray"
+background = "black"
+
+[ui.viewer_search_match]
+foreground = "black"
+background = "yellow"
+
+[ui.progress]
+foreground = "black"
+background = "cyan"
+
+[ui.pane_title]
+foreground = "light_gray"
+background = "black"
+
+[ui.pane_title_active]
+foreground = "cyan"
+background = "black"
+
+[ui.background]
+foreground = "light_gray"
+background = "black"
+
+[ui.surface]
+foreground = "light_gray"
+background = "black"
+
+[ui.border]
+foreground = "dark_gray"
+background = "black"
+
+[ui.border_active]
+foreground = "cyan"
+background = "black"
+
+[ui.selection_inactive]
+foreground = "light_gray"
+background = "dark_gray"
+
+[ui.path]
+foreground = "dark_gray"
+background = "black"
+
+[ui.column_header]
+foreground = "dark_gray"
+background = "black"
+
+[ui.error]
+foreground = "white"
+background = "red"
+
+[ui.warning]
+foreground = "yellow"
+background = "black"
+
+[symbols]
+directory = "▸"
+parent = "↑"
+selected = "›"
+upload = "↑"
+download = "↓"

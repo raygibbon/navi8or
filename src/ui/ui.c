@@ -2,159 +2,1554 @@
 #include "nav_terminal.h"
 #include "nav_theme.h"
 #include "nav_ui.h"
-#include "tdxui.h"
+#include "nav_ui_core.h"
+#include <assert.h>
 #include <errno.h>
 #include <stdio.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <unistd.h>
 
-typedef enum { CMD_NONE, CMD_VIEW, CMD_EDIT, CMD_COPY, CMD_MOVE, CMD_DELETE,
-               CMD_MKDIR, CMD_QUIT, CMD_REFRESH, CMD_HIDDEN, CMD_SORT_NAME,
-               CMD_SORT_SIZE, CMD_SORT_DATE, CMD_FILTER, CMD_HELP, CMD_ABOUT } Command;
+typedef enum
+{
+    CMD_NONE,
+    CMD_OPEN_LOCATION,
+    CMD_VIEW,
+    CMD_PROPERTIES,
+    CMD_EDIT,
+    CMD_COPY,
+    CMD_MOVE,
+    CMD_DELETE,
+    CMD_MKDIR,
+    CMD_QUIT,
+    CMD_REFRESH,
+    CMD_HIDDEN,
+    CMD_SORT_NAME,
+    CMD_SORT_SIZE,
+    CMD_SORT_DATE,
+    CMD_PANEL_BRIEF,
+    CMD_PANEL_FULL,
+    CMD_FILTER,
+    CMD_HELP,
+    CMD_ABOUT,
+    CMD_OPEN_CONFIG,
+    CMD_RELOAD_CONFIG,
+    CMD_THEME_INFO,
+    CMD_REPOSITORY_OPEN,
+    CMD_REPOSITORY_ADD,
+    CMD_REPOSITORY_EDIT,
+    CMD_REPOSITORY_REMOVE,
+    CMD_VAULT
+} Command;
 
 static void draw_app(void *data);
 static void dispatch(NavApp *app, Command command);
+static void draw_commander_menu_bar(void);
 
-static void set_status(NavApp *app,const char *message){snprintf(app->status,sizeof app->status," %.*s",(int)sizeof app->status-2,message);}
-
-static bool entry_visible(const NavPane *pane,const NavEntry *entry){return pane->filter[0]==0||strstr(entry->name,pane->filter)!=NULL;}
-
-static void draw_pane(NavPane *pane,int x,int y,int width,int height,bool active){
-    char title[NAV_PATH_MAX+32],row[512];
-    int visible=0,line=0;
-    nav_pane_ensure_visible(pane,height-2);
-    snprintf(title,sizeof title," %s [%s] ",pane->path,pane->sort_mode==NAV_SORT_SIZE?"size":pane->sort_mode==NAV_SORT_DATE?"date":"name");
-    nav_ui_box(x,y,width,height,title,active?NAV_STYLE_ACTIVE:NAV_STYLE_NORMAL);
-    for(size_t i=0;i<pane->listing.count&&line<height-2;i++){
-        NavEntry *entry=&pane->listing.items[i];
-        if(!entry_visible(pane,entry))continue;
-        if(visible++<pane->offset)continue;
-        snprintf(row,sizeof row,"%-*.*s",width-2,width-2,entry->name);
-        nav_ui_text(x+1,y+1+line++,width-2,row,active&&visible-1==pane->selected?NAV_STYLE_SELECTED:NAV_STYLE_NORMAL);
+static bool command_available(const NavApp *app, Command command)
+{
+    const NavPane *source = &app->panes[app->active];
+    const NavPane *destination = &app->panes[!app->active];
+    const NavEntry *entry = nav_pane_selected(source);
+    switch (command) {
+    case CMD_VIEW:
+        return entry && !(entry->flags & NAV_ENTRY_DIR) &&
+               nav_provider_supports(source->provider, NAV_CAP_READ);
+    case CMD_EDIT:
+        return entry && !(entry->flags & NAV_ENTRY_DIR) &&
+               nav_provider_supports(source->provider, NAV_CAP_EDIT_LOCAL);
+    case CMD_COPY:
+        return entry && !(entry->flags & NAV_ENTRY_DIR) &&
+               nav_provider_supports(source->provider, NAV_CAP_READ) &&
+               nav_provider_supports(destination->provider, NAV_CAP_WRITE);
+    case CMD_MOVE:
+        return entry && !(entry->flags & NAV_ENTRY_PARENT) &&
+               nav_provider_supports(source->provider, NAV_CAP_RENAME) &&
+               source->provider->rename_path &&
+               (!nav_provider_supports(source->provider, NAV_CAP_EDIT_LOCAL) ||
+                source->provider == destination->provider);
+    case CMD_DELETE:
+        return entry && !(entry->flags & NAV_ENTRY_PARENT) &&
+               nav_provider_supports(source->provider, NAV_CAP_DELETE) &&
+               source->provider->remove;
+    case CMD_MKDIR:
+        return nav_provider_supports(source->provider, NAV_CAP_MKDIR) &&
+               source->provider->mkdir && source->provider->location_child;
+    default:
+        return true;
     }
-    if(nav_pane_visible_count(pane)==0)nav_ui_text(x+2,y+2,width-4,"(no matches)",NAV_STYLE_NORMAL);
 }
 
-static void draw_app(void *data){
-    NavApp *app=data;
-    int width=nav_term_width(),height=nav_term_height(),pane_height=height-3;
-    nav_term_clear(NAV_STYLE_NORMAL);
-    if(width<20||height<8){nav_ui_text(0,0,width,"Terminal too small",NAV_STYLE_MENU);return;}
-    draw_pane(&app->panes[0],0,0,width/2,pane_height,app->active==0);
-    draw_pane(&app->panes[1],width/2,0,width-width/2,pane_height,app->active==1);
-    if(app->panes[app->active].filter[0]){char filter[300];snprintf(filter,sizeof filter," Filter: %s",app->panes[app->active].filter);nav_ui_text(0,height-3,width,filter,NAV_STYLE_DIALOG);}else{const NavEntry*entry=nav_pane_selected(&app->panes[app->active]);if(entry){char status[512],date[32];struct tm tm_value;localtime_r(&entry->modified,&tm_value);strftime(date,sizeof date,"%Y-%m-%d %H:%M",&tm_value);snprintf(status,sizeof status," %.*s   %llu bytes   %s",420,entry->path,(unsigned long long)entry->size,date);nav_ui_text(0,height-3,width,status,NAV_STYLE_NORMAL);}else nav_ui_text(0,height-3,width,app->status,NAV_STYLE_NORMAL);}
-    nav_ui_text(0,height-2,width," F1 Help  F3 View  F4 Edit  F5 Copy  F6 Move  F7 MkDir  F8 Delete",NAV_STYLE_MENU);
-    nav_ui_text(0,height-1,width," Ctrl+\\ Menu   F9 alias   F10 Quit   Tab Switch   / Filter",NAV_STYLE_MENU);
+static void set_message(NavApp *app, NavMessageKind kind, const char *message)
+{
+    app->status_kind = kind;
+    snprintf(app->status, sizeof app->status, " %.*s",
+             (int)sizeof app->status - 2, message);
+}
+
+static void set_status(NavApp *app, const char *message)
+{
+    set_message(app, NAV_MESSAGE_STATUS, message);
+}
+
+static void set_notice(NavApp *app, const char *message)
+{
+    set_message(app, NAV_MESSAGE_NOTICE, message);
+}
+
+static void set_warning(NavApp *app, const char *message)
+{
+    set_message(app, NAV_MESSAGE_WARNING, message);
+}
+
+static void set_error(NavApp *app, const char *message)
+{
+    set_message(app, NAV_MESSAGE_ERROR, message);
+}
+
+static bool entry_visible(const NavPane *pane, const NavEntry *entry) { return pane->filter[0] == 0 || strstr(entry->name, pane->filter) != NULL; }
+
+/* The pane content model retains useful TDX/TDE mechanics, while Navi8or owns
+ * the hierarchy, geometry, semantic roles, and modern/classic presentation. */
+static void draw_pane_title(const NavPane *pane, int x, int y, int width,
+                            char side, bool active, NavUiStyle profile)
+{
+    char provider[64], marker[8];
+    NavStyle style = active ? NAV_STYLE_PANE_TITLE_ACTIVE : NAV_STYLE_PANE_TITLE;
+    nav_provider_display_name(pane->provider, provider, sizeof provider);
+    nav_ui_text(x, y, width, "", style);
+    if (width > 2) nav_ui_text(x + 1, y, width - 2, provider, style);
+    if (profile == NAV_UI_STYLE_CLASSIC) {
+        snprintf(marker, sizeof marker, "[%c]", side);
+        if (width >= 5) nav_ui_text(x + width - 4, y, 3, marker, style);
+    }
+}
+
+static const char *utf8_tail(const char *text, size_t bytes)
+{
+    size_t length = strlen(text);
+    const unsigned char *tail;
+    if (length <= bytes) return text;
+    tail = (const unsigned char *)text + length - bytes;
+    while (*tail && (*tail & 0xc0u) == 0x80u) tail++;
+    return (const char *)tail;
+}
+
+static void draw_pane_location(const NavPane *pane, int x, int y, int width)
+{
+    char line[NAV_PATH_MAX + 4];
+    const char *path = pane->location.display_path;
+    int available = width > 2 ? width - 2 : width;
+    nav_ui_text(x, y, width, "", NAV_STYLE_PATH);
+    if (available <= 0) return;
+    if ((int)strlen(path) > available && available > 1) {
+        const char *prefix = available >= 5 ? "..." : "<";
+        int tail_width = available - (int)strlen(prefix);
+        const char *tail = utf8_tail(path, (size_t)tail_width);
+        snprintf(line, sizeof line, "%s%.*s", prefix, tail_width, tail);
+    }
+    else snprintf(line, sizeof line, "%s", path);
+    nav_ui_text(x + (width > 2 ? 1 : 0), y, available, line, NAV_STYLE_PATH);
+}
+
+static void draw_pane_columns(const NavPane *pane, int x, int y, int width)
+{
+    char row[NAV_PATH_MAX];
+    int text_width = width > 2 ? width - 2 : 1;
+    if (text_width >= (int)sizeof row) text_width = (int)sizeof row - 1;
+    nav_format_panel_header(pane->view, pane->sort_mode, width, row, sizeof row);
+    nav_ui_text(x, y, width, "", NAV_STYLE_COLUMN_HEADER);
+    nav_ui_text(x + (width > 2 ? 1 : 0), y, text_width, row,
+                NAV_STYLE_COLUMN_HEADER);
+}
+
+static void draw_pane_body(NavPane *pane, int x, int width, int body_top,
+                           int body_height, bool active)
+{
+    char row[NAV_PATH_MAX];
+    const NavSymbols *symbols = nav_symbols_active();
+    int visible = 0;
+    nav_pane_set_layout(pane, width, body_height);
+    for (int row_index = 0; row_index < body_height; row_index++)
+        nav_ui_text(x, body_top + row_index, width, "", NAV_STYLE_TEXT);
+    for (size_t i = 0; i < pane->listing.count; i++)
+    {
+        NavEntry *entry = &pane->listing.items[i];
+        if (!entry_visible(pane, entry))
+            continue;
+        if (visible++ < pane->offset)
+            continue;
+        int relative = visible - 1 - pane->offset;
+        int columns = pane->view == NAV_PANEL_BRIEF ? pane->visible_columns : 1;
+        int column = pane->view == NAV_PANEL_BRIEF ? relative / pane->rows_per_column : 0;
+        int row_number = pane->view == NAV_PANEL_BRIEF ? relative % pane->rows_per_column : relative;
+        if (column >= columns || row_number >= body_height)
+            continue;
+        int base_width = width / columns;
+        int item_x = x + column * base_width;
+        int column_width = column + 1 == columns ? width - column * base_width : base_width;
+        int text_width = column_width - 2;
+        if (text_width < 1)
+            text_width = 1;
+        if (text_width >= (int)sizeof row) text_width = (int)sizeof row - 1;
+        char display[NAV_NAME_MAX + 2];
+        nav_entry_format_display_name(entry, display, sizeof display);
+        if (pane->view == NAV_PANEL_FULL)
+            nav_format_entry_full(entry, column_width, row, sizeof row);
+        else
+            snprintf(row, sizeof row, "%-*.*s", text_width, text_width, display);
+        NavStyle row_style = visible - 1 == pane->selected
+                                 ? (active ? NAV_STYLE_SELECTION
+                                           : NAV_STYLE_SELECTION_INACTIVE)
+                                 : NAV_STYLE_TEXT;
+        nav_term_glyph(item_x, body_top + row_number, entry->flags & NAV_ENTRY_PARENT ? symbols->parent : entry->flags & NAV_ENTRY_DIR ? symbols->directory : ' ',
+                       row_style);
+        nav_ui_text(item_x + 1, body_top + row_number, text_width, row, row_style);
+    }
+    if (nav_pane_visible_count(pane) == 0)
+        nav_ui_text(x + 1, body_top, width - 2, "(no matches)", NAV_STYLE_TEXT);
+}
+
+static void draw_pane_summary(const NavPane *pane, int x, int y, int width,
+                              bool active, NavUiStyle profile)
+{
+    char line[512] = {0}, size[32] = {0};
+    NavStyle style = profile == NAV_UI_STYLE_CLASSIC ? NAV_STYLE_STATUS
+                                                     : NAV_STYLE_TEXT_DIM;
+    if (active && profile == NAV_UI_STYLE_CLASSIC) {
+        const NavEntry *entry = nav_pane_selected(pane);
+        nav_ui_text(x, y, width, "", style);
+        if (entry && width > 2) {
+            nav_format_entry_full(entry, width, line, sizeof line);
+            nav_ui_text(x + 1, y, width - 2, line, style);
+        }
+        return;
+    } else if (active) {
+        const NavEntry *entry = nav_pane_selected(pane);
+        if (entry) {
+            if (entry->flags & NAV_ENTRY_DIR)
+                snprintf(size, sizeof size, "<DIR>");
+            else if (entry->flags & NAV_ENTRY_SIZE_KNOWN)
+                nav_format_size(entry->size, size, sizeof size);
+            else
+                snprintf(size, sizeof size, "-");
+            snprintf(line, sizeof line, " Selected: %.*s  %s",
+                     320, entry->name, size);
+        }
+    } else {
+        int files = 0, directories = 0;
+        uint64_t bytes = 0;
+        bool known = false;
+        for (size_t index = 0; index < pane->listing.count; index++) {
+            const NavEntry *entry = &pane->listing.items[index];
+            if (!entry_visible(pane, entry) || entry->flags & NAV_ENTRY_PARENT) continue;
+            if (entry->flags & NAV_ENTRY_DIR) directories++;
+            else {
+                files++;
+                if (entry->flags & NAV_ENTRY_SIZE_KNOWN) { bytes += entry->size; known = true; }
+            }
+        }
+        if (known) {
+            nav_format_size(bytes, size, sizeof size);
+            snprintf(line, sizeof line, " %s in %d files, %d dirs", size, files, directories);
+        } else snprintf(line, sizeof line, " %d files, %d dirs", files, directories);
+    }
+    if (pane->filter[0]) {
+        size_t used = strlen(line);
+        snprintf(line + used, sizeof line - used, "%sFilter: %.*s",
+                 used ? "  |  " : " ", 120, pane->filter);
+    }
+    nav_ui_text(x, y, width, line, style);
+}
+
+static void draw_global_status(const NavApp *app, const NavCommanderLayout *layout,
+                               NavUiStyle profile)
+{
+    char line[NAV_PATH_MAX];
+    NavStyle role = NAV_STYLE_STATUS;
+    if (app->status_kind == NAV_MESSAGE_NOTICE) role = NAV_STYLE_MESSAGE;
+    else if (app->status_kind == NAV_MESSAGE_WARNING) role = NAV_STYLE_WARNING;
+    else if (app->status_kind == NAV_MESSAGE_ERROR) role = NAV_STYLE_ERROR;
+    if (profile == NAV_UI_STYLE_CLASSIC) {
+        const char *left = nav_path_basename(app->panes[0].location.display_path);
+        const char *right = nav_path_basename(app->panes[1].location.display_path);
+        if (!left || !*left) left = app->panes[0].location.display_path;
+        if (!right || !*right) right = app->panes[1].location.display_path;
+        snprintf(line, sizeof line, " L: %.255s | R: %.255s%s%.255s", left,
+                 right, app->status[0] ? " |" : "", app->status);
+    } else
+        snprintf(line, sizeof line, "%s", app->status[0] ? app->status : " Ready");
+    nav_ui_text(0, layout->status_row, layout->width, line, role);
+}
+
+static Command function_key_command(int key)
+{
+    switch (key) {
+    case 3: return CMD_VIEW;
+    case 4: return CMD_EDIT;
+    case 5: return CMD_COPY;
+    case 6: return CMD_MOVE;
+    case 7: return CMD_MKDIR;
+    case 8: return CMD_DELETE;
+    default: return CMD_NONE;
+    }
+}
+
+static void draw_function_key_bar(const NavApp *app,
+                                  const NavCommanderLayout *layout)
+{
+    NavFunctionKeySegment segments[9];
+    size_t count = nav_function_key_layout(layout->width, segments,
+                                           sizeof segments / sizeof *segments);
+    nav_ui_text(0, layout->key_bar_row, layout->width, "", NAV_STYLE_KEYBAR);
+    for (size_t index = 0; index < count; index++) {
+        char key[4], label[16];
+        Command command = function_key_command(segments[index].key);
+        bool available = command == CMD_NONE || command_available(app, command);
+        snprintf(key, sizeof key, "F%d", segments[index].key);
+        snprintf(label, sizeof label, " %-*.*s", segments[index].width - segments[index].key_width - 1,
+                 segments[index].width - segments[index].key_width - 1, segments[index].label);
+        nav_ui_text(segments[index].x, layout->key_bar_row, segments[index].key_width,
+                    key, !available ? NAV_STYLE_KEYBAR_DISABLED :
+                         NAV_STYLE_KEYBAR_KEY);
+        nav_ui_text(segments[index].x + segments[index].key_width, layout->key_bar_row,
+                    segments[index].width - segments[index].key_width, label,
+                    available ? NAV_STYLE_KEYBAR : NAV_STYLE_KEYBAR_DISABLED);
+    }
+}
+
+static void draw_app(void *data)
+{
+    NavApp *app = data;
+    int width = nav_term_width(), height = nav_term_height();
+    NavCommanderLayout layout;
+    const NavTheme *theme = nav_term_theme();
+    NavUiStyle profile = theme ? theme->style : NAV_UI_STYLE_MODERN;
+    nav_term_clear(NAV_STYLE_BACKGROUND);
+    if (!nav_commander_layout_for_style(width, height, profile, &layout))
+    {
+        nav_ui_text(0, 0, width, "Terminal too small", NAV_STYLE_MENU);
+        return;
+    }
+    draw_commander_menu_bar();
+    draw_pane_title(&app->panes[0], layout.pane_x[0], layout.pane_title_row,
+                    layout.pane_width[0], 'L', app->active == 0, profile);
+    draw_pane_title(&app->panes[1], layout.pane_x[1], layout.pane_title_row,
+                    layout.pane_width[1], 'R', app->active == 1, profile);
+    draw_pane_location(&app->panes[0], layout.pane_x[0], layout.pane_location_row,
+                       layout.pane_width[0]);
+    draw_pane_location(&app->panes[1], layout.pane_x[1], layout.pane_location_row,
+                       layout.pane_width[1]);
+    draw_pane_columns(&app->panes[0], layout.pane_x[0],
+                      layout.pane_column_header_row, layout.pane_width[0]);
+    draw_pane_columns(&app->panes[1], layout.pane_x[1],
+                      layout.pane_column_header_row, layout.pane_width[1]);
+    if (layout.pane_column_separator_row >= 0) {
+        nav_term_hline(layout.pane_x[0], layout.pane_column_separator_row, 0xc4,
+                       layout.pane_width[0], app->active == 0 ? NAV_STYLE_BORDER_ACTIVE
+                                                             : NAV_STYLE_BORDER);
+        nav_term_hline(layout.pane_x[1], layout.pane_column_separator_row, 0xc4,
+                       layout.pane_width[1], app->active == 1 ? NAV_STYLE_BORDER_ACTIVE
+                                                             : NAV_STYLE_BORDER);
+    }
+    draw_pane_body(&app->panes[0], layout.pane_x[0], layout.pane_width[0],
+                   layout.body_top, layout.body_height, app->active == 0);
+    draw_pane_body(&app->panes[1], layout.pane_x[1], layout.pane_width[1],
+                   layout.body_top, layout.body_height, app->active == 1);
+    draw_pane_summary(&app->panes[0], layout.pane_x[0], layout.summary_row,
+                      layout.pane_width[0], app->active == 0, profile);
+    draw_pane_summary(&app->panes[1], layout.pane_x[1], layout.summary_row,
+                      layout.pane_width[1], app->active == 1, profile);
+    nav_term_vline(layout.divider, layout.pane_title_row, 0xb3,
+                   layout.summary_row - layout.pane_title_row + 1,
+                   NAV_STYLE_BORDER);
+    draw_global_status(app, &layout, profile);
+    draw_function_key_bar(app, &layout);
     nav_term_hide_cursor();
 }
 
-static void present_app(NavApp *app){draw_app(app);nav_term_present();}
+static void present_app(NavApp *app)
+{
+    draw_app(app);
+    nav_term_present();
+}
 
-static void restore_selection(NavPane *pane,const char *path){int visible=0;for(size_t i=0;i<pane->listing.count;i++)if(entry_visible(pane,&pane->listing.items[i])){if(!strcmp(path,pane->listing.items[i].path)){pane->selected=visible;break;}visible++;}nav_pane_clamp_selection(pane);nav_pane_ensure_visible(pane,nav_term_height()-5);}
+static void restore_selection(NavPane *pane, const char *path)
+{
+    int visible = 0;
+    for (size_t i = 0; i < pane->listing.count; i++)
+        if (entry_visible(pane, &pane->listing.items[i]))
+        {
+            if (!strcmp(path, pane->listing.items[i].resource_id))
+            {
+                pane->selected = visible;
+                break;
+            }
+            visible++;
+        }
+    nav_pane_clamp_selection(pane);
+    nav_pane_ensure_visible(pane);
+}
 
-static void refresh_pane(NavApp *app,NavPane *pane){char selected[NAV_PATH_MAX]={0},path[NAV_PATH_MAX],error[256];const NavEntry *entry=nav_pane_selected(pane);if(entry)snprintf(selected,sizeof selected,"%s",entry->path);snprintf(path,sizeof path,"%s",pane->path);if(nav_pane_load(pane,path,app->show_hidden,false,error,sizeof error)){set_status(app,error);return;}nav_pane_sort(pane,pane->sort_mode);if(selected[0])restore_selection(pane,selected);}
+static void refresh_pane(NavApp *app, NavPane *pane)
+{
+    char selected[NAV_PATH_MAX] = {0}, error[256];
+    const NavEntry *entry = nav_pane_selected(pane);
+    if (entry)
+        snprintf(selected, sizeof selected, "%s", entry->resource_id);
+    if (nav_pane_refresh(pane, app->show_hidden, error, sizeof error))
+    {
+        set_error(app, error);
+        return;
+    }
+    nav_pane_sort(pane, pane->sort_mode);
+    if (selected[0])
+        restore_selection(pane, selected);
+}
 
-static void show_help(void){
-    static const char *lines[]={
-        "NAV Keys","","Pane navigation",
+static void show_help(void)
+{
+    static const char *lines[] = {
+        "Navi8or Keys", "", "Pane navigation",
         "  Tab          Switch pane",
         "  Up/Down      Move selection",
         "  Home/End     First/last item",
         "  PgUp/PgDn    Page movement",
-        "  Enter        Open",
+        "  Enter        Open directory / view file",
         "  Backspace    Parent",
         "  Alt+Left     History back",
         "  Alt+Right    History forward",
-        "  Alt+Up       Parent","","Files",
+        "  Alt+Up       Parent", "", "Files",
+        "  F1           Help",
+        "  F2           Menu",
         "  F3           View",
-        "  F4           Edit in TDX",
+        "  F4           Edit with configured editor",
         "  F5           Copy",
         "  F6           Move/Rename",
         "  F7           Make directory",
         "  F8           Delete",
-        "  F10          Quit","","Menus",
-        "  Ctrl+\\       Open menu (F9 alias)",
+        "  F10          Quit", "", "Menus",
+        "  Ctrl+\\       Open menu (F2 alias)",
         "  Ctrl+Right   Next top-level menu",
         "  Ctrl+Left    Previous top-level menu",
         "  Up/Down      Select command",
         "  Enter        Run command",
-        "  Esc          Close menu","","Viewer and Help",
-        "  /            Find/filter",
-        "  Home/End     Top/bottom",
-        "  PgUp/PgDn    Scroll by page",
-        "  Esc          Return"
-    };
-    nav_info(" Help ",lines,sizeof lines/sizeof *lines);
+        "  Esc          Close menu", "", "Viewer and Help",
+        "  /            Filter",
+        "  Esc          Close help"};
+    nav_ui_info(" Navi8or Help ", lines, sizeof lines / sizeof *lines);
 }
 
-typedef struct { NavApp *app; const char *name; uint64_t done,total; } ProgressContext;
-static void draw_progress(uint64_t done,uint64_t total,void *data){ProgressContext*c=data;NavTermEvent event;while(nav_term_poll_event(&event,0)>0){if(event.type==NAV_TERM_EVENT_RESIZE)continue;}int width=nav_term_width(),height=nav_term_height(),box_width=width>64?64:width-2,bar_width=box_width-8,percent=total?(int)(done*100/total):100,filled=total?(int)(done*(uint64_t)bar_width/total):bar_width;char line[256],bar[128];c->done=done;c->total=total;draw_app(c->app);if(width<20||height<8){nav_term_present();return;}nav_ui_box((width-box_width)/2,height/2-3,box_width,7," Copying ",NAV_STYLE_DIALOG);nav_ui_text((width-box_width)/2+2,height/2-2,box_width-4,c->name,NAV_STYLE_DIALOG);memset(bar,'-',(size_t)bar_width);for(int i=0;i<filled&&i<bar_width;i++)bar[i]='=';bar[bar_width]=0;snprintf(line,sizeof line,"[%s] %d%%",bar,percent);nav_ui_text((width-box_width)/2+2,height/2,box_width-4,line,NAV_STYLE_DIALOG);snprintf(line,sizeof line,"%llu / %llu bytes",(unsigned long long)done,(unsigned long long)total);nav_ui_text((width-box_width)/2+2,height/2+2,box_width-4,line,NAV_STYLE_DIALOG);nav_term_present();}
+typedef struct
+{
+    NavApp *app;
+    const char *name;
+    uint64_t done, total;
+    bool total_known;
+} ProgressContext;
+static void draw_progress(uint64_t done, uint64_t total, bool total_known, void *data)
+{
+    ProgressContext *c = data;
+    int width = nav_term_width(), height = nav_term_height(), box_width = width > 64 ? 64 : width - 2, bar_width = box_width - 8, percent = total_known && total ? (int)(done * 100 / total) : 0, filled = total_known && total ? (int)(done * (uint64_t)bar_width / total) : 0;
+    char line[256], bar[128];
+    c->done = done;
+    c->total = total;
+    c->total_known = total_known;
+    draw_app(c->app);
+    if (width < 20 || height < 8)
+    {
+        nav_term_present();
+        return;
+    }
+    nav_ui_box((width - box_width) / 2, height / 2 - 3, box_width, 7, " Copying ", NAV_STYLE_DIALOG);
+    nav_ui_text((width - box_width) / 2 + 2, height / 2 - 2, box_width - 4, c->name, NAV_STYLE_DIALOG);
+    memset(bar, '-', (size_t)bar_width);
+    for (int i = 0; i < filled && i < bar_width; i++)
+        bar[i] = '=';
+    bar[bar_width] = 0;
+    if (total_known)
+        snprintf(line, sizeof line, "[%s] %d%%", bar, percent);
+    else
+        snprintf(line, sizeof line, "[%s] ...", bar);
+    nav_ui_text((width - box_width) / 2 + 2, height / 2, box_width - 4, line, NAV_STYLE_DIALOG);
+    if (total_known)
+        snprintf(line, sizeof line, "%llu / %llu bytes", (unsigned long long)done, (unsigned long long)total);
+    else
+        snprintf(line, sizeof line, "%llu bytes", (unsigned long long)done);
+    nav_ui_text((width - box_width) / 2 + 2, height / 2 + 2, box_width - 4, line, NAV_STYLE_DIALOG);
+    nav_term_present();
+}
 
-static void command_copy(NavApp *app){NavPane*source=&app->panes[app->active],*destination=&app->panes[!app->active];const NavEntry*entry=nav_pane_selected(source);char target[NAV_PATH_MAX],label[NAV_PATH_MAX+32],error[256];NavEntry existing;bool overwrite=false;if(!entry){set_status(app,"No selected entry");return;}if(entry->flags&NAV_ENTRY_DIR){set_status(app,"Directory copy is not implemented");return;}if(nav_path_join(destination->path,nav_path_basename(entry->path),target,sizeof target)){set_status(app,"Destination path is too long");return;}snprintf(label,sizeof label,"To: ");if(nav_prompt_text(" Copy ",label,target,sizeof target,draw_app,app))return;if(!destination->provider->stat(destination->provider,target,&existing,error,sizeof error)){char question[NAV_NAME_MAX+32];snprintf(question,sizeof question,"Overwrite \"%.*s\"?",NAV_NAME_MAX-16,existing.name);if(!nav_confirm(question,draw_app,app))return;overwrite=true;}ProgressContext progress={app,entry->name,0,entry->size};if(nav_transfer_copy(source->provider,entry->path,destination->provider,target,overwrite,draw_progress,&progress,error,sizeof error))set_status(app,error);else set_status(app,"Copy complete");refresh_pane(app,destination);}
+static void command_copy(NavApp *app)
+{
+    NavPane *source = &app->panes[app->active], *destination = &app->panes[!app->active];
+    const NavEntry *entry = nav_pane_selected(source);
+    char target[NAV_PATH_MAX], suggested[NAV_PATH_MAX], label[NAV_PATH_MAX + 32], error[256];
+    NavEntry existing;
+    bool overwrite = false;
+    if (!entry) {
+        set_warning(app, "No selected entry");
+        return;
+    }
+    if (!nav_provider_supports(source->provider, NAV_CAP_READ)) {
+        set_warning(app, "Source cannot be read");
+        return;
+    }
+    if (!nav_provider_supports(destination->provider, NAV_CAP_WRITE)) {
+        set_warning(app, "Destination is read-only");
+        return;
+    }
+    if (entry->flags & NAV_ENTRY_DIR)
+    {
+        set_warning(app, "Directory copy is not implemented");
+        return;
+    }
+    NavLocation target_location;
+    if (destination->provider->location_child(destination->provider, &destination->location, entry->name, &target_location, error, sizeof error)) { set_error(app, error); return; }
+    snprintf(target, sizeof target, "%s", target_location.resource_id);
+    snprintf(suggested, sizeof suggested, "%s", target);
+    snprintf(label, sizeof label, "To: ");
+    if (nav_ui_prompt_text(" Copy ", label, target, sizeof target, draw_app, app))
+        return;
+    if (strcmp(target, suggested) &&
+        (!destination->provider->location ||
+         destination->provider->location(destination->provider, target,
+                                         &target_location, error,
+                                         sizeof error)))
+    {
+        set_error(app, error[0] ? error : "Invalid destination");
+        return;
+    }
+    if (strcmp(target, suggested))
+        snprintf(target, sizeof target, "%s", target_location.resource_id);
+    if (nav_provider_supports(destination->provider, NAV_CAP_STAT) && !destination->provider->stat(destination->provider, target, &existing, error, sizeof error))
+    {
+        char question[NAV_NAME_MAX + 32];
+        snprintf(question, sizeof question, "Overwrite \"%.*s\"?", NAV_NAME_MAX - 16, existing.name);
+        if (app->config.confirm_overwrite && !nav_ui_confirm(question, draw_app, app))
+            return;
+        overwrite = true;
+    }
+    ProgressContext progress = {app, entry->name, 0, entry->size,
+                                nav_entry_has_known_size(entry)};
+    if (nav_transfer_copy_with_buffer(source->provider, entry->resource_id, destination->provider, target, overwrite, app->config.transfer_buffer_size, draw_progress, &progress, error, sizeof error))
+        set_error(app, error);
+    else {
+        set_notice(app, "Copy complete");
+        refresh_pane(app, destination);
+    }
+}
 
-static void command_move(NavApp *app){NavPane*source=&app->panes[app->active],*destination=&app->panes[!app->active];const NavEntry*entry=nav_pane_selected(source);char target[NAV_PATH_MAX],error[256];if(!entry){set_status(app,"No selected entry");return;}if(nav_path_join(destination->path,nav_path_basename(entry->path),target,sizeof target)){set_status(app,"Destination path is too long");return;}if(nav_prompt_text(" Move / Rename ","To: ",target,sizeof target,draw_app,app))return;if(source->provider->rename_path(source->provider,entry->path,target,error,sizeof error))set_status(app,error);else set_status(app,"Move complete");refresh_pane(app,source);refresh_pane(app,destination);}
+static void command_move(NavApp *app)
+{
+    NavPane *source = &app->panes[app->active], *destination = &app->panes[!app->active];
+    const NavEntry *entry = nav_pane_selected(source);
+    char target[NAV_PATH_MAX], renamed_name[NAV_NAME_MAX], error[256] = {0};
+    bool same_provider = source->provider == destination->provider;
+    bool local_style = nav_provider_supports(source->provider, NAV_CAP_EDIT_LOCAL);
+    bool use_opposite_destination = same_provider && local_style;
+    if (!entry) {
+        set_warning(app, "No selected entry");
+        return;
+    }
+    if (entry->flags & NAV_ENTRY_PARENT) {
+        set_warning(app, "Parent entry cannot be renamed");
+        return;
+    }
+    if (!nav_provider_supports(source->provider, NAV_CAP_RENAME) ||
+        !source->provider->rename_path) {
+        set_warning(app, "Rename is not supported here");
+        return;
+    }
+    if (!same_provider && local_style) {
+        set_warning(app, "Move between providers is not implemented");
+        return;
+    }
+    NavLocation target_location;
+    /* Local F6 retains its pane-to-pane move semantics.  Other rename
+     * providers rename inside the active pane; their rename operation owns
+     * any provider-specific destination validation. */
+    if (use_opposite_destination) {
+        if (!destination->provider->location_child ||
+            destination->provider->location_child(destination->provider,
+                                                   &destination->location,
+                                                   entry->name,
+                                                   &target_location, error,
+                                                   sizeof error)) {
+            set_error(app, error[0] ? error : "Destination cannot accept this entry");
+            return;
+        }
+        snprintf(target, sizeof target, "%s", target_location.resource_id);
+        if (nav_ui_prompt_text(" Move / Rename ", "To: ", target, sizeof target,
+                            draw_app, app))
+            return;
+        if (!nav_leaf_name_copy(renamed_name, nav_path_basename(target))) {
+            set_warning(app, "Rename target name is too long");
+            return;
+        }
+        if (!source->provider->location ||
+            source->provider->location(source->provider, target,
+                                       &target_location, error, sizeof error)) {
+            set_error(app, error[0] ? error : "Invalid destination");
+            return;
+        }
+    } else {
+        snprintf(target, sizeof target, "%s", entry->name);
+        if (nav_ui_prompt_text(" Rename ", "Rename to: ", target, sizeof target,
+                            draw_app, app))
+            return;
+        if (!nav_leaf_name_copy(renamed_name, target)) {
+            set_warning(app, "Rename target name is too long");
+            return;
+        }
+        if (!source->provider->location_child ||
+            source->provider->location_child(source->provider,
+                                              &source->location, target,
+                                              &target_location, error,
+                                              sizeof error)) {
+            set_error(app, error[0] ? error : "Invalid rename destination");
+            return;
+        }
+    }
+    snprintf(target, sizeof target, "%s", target_location.resource_id);
+    if (source->provider->rename_path(source->provider, entry->resource_id,
+                                      target, error, sizeof error))
+        set_error(app, error);
+    else {
+        /* A successful rename can leave the new leaf outside an active
+         * filter.  Use the normal pane visibility rule before refreshing, so
+         * failure paths leave both filter and selection untouched. */
+        NavEntry renamed = *entry;
+        if (!nav_leaf_name_copy(renamed.name, renamed_name)) {
+            set_warning(app, "Rename target name is too long");
+            return;
+        }
+        if (!entry_visible(source, &renamed))
+            source->filter[0] = 0;
+        set_notice(app, "Move complete");
+        refresh_pane(app, source);
+        restore_selection(source, target);
+        if (use_opposite_destination && destination != source)
+            refresh_pane(app, destination);
+    }
+}
 
-static void command_mkdir(NavApp *app){NavPane*pane=&app->panes[app->active];char name[NAV_NAME_MAX]={0},path[NAV_PATH_MAX],error[256];if(nav_prompt_text(" Create Directory ","Name: ",name,sizeof name,draw_app,app)||!name[0])return;if(nav_path_join(pane->path,name,path,sizeof path)){set_status(app,"Directory path is too long");return;}if(pane->provider->mkdir(pane->provider,path,error,sizeof error))set_status(app,error);else set_status(app,"Directory created");refresh_pane(app,pane);}
+static void command_mkdir(NavApp *app)
+{
+    NavPane *pane = &app->panes[app->active];
+    char name[NAV_NAME_MAX] = {0}, error[256] = {0};
+    if (!nav_provider_supports(pane->provider, NAV_CAP_MKDIR) ||
+        !pane->provider->mkdir || !pane->provider->location_child) {
+        set_warning(app, "Directory creation is not supported");
+        return;
+    }
+    if (nav_ui_prompt_text(" Create Directory ", "Name: ", name, sizeof name, draw_app, app) || !name[0])
+        return;
+    NavLocation location;
+    if (pane->provider->location_child(pane->provider, &pane->location, name,
+                                       &location, error, sizeof error))
+    {
+        set_error(app, error[0] ? error : "Provider cannot create this directory");
+        return;
+    }
+    if (pane->provider->mkdir(pane->provider, location.resource_id, error, sizeof error))
+        set_error(app, error);
+    else {
+        set_notice(app, "Directory created");
+        refresh_pane(app, pane);
+    }
+}
 
-static void command_delete(NavApp *app){NavPane*pane=&app->panes[app->active];const NavEntry*entry=nav_pane_selected(pane);char question[NAV_NAME_MAX+32],error[256];if(!entry||entry->flags&NAV_ENTRY_PARENT)return;snprintf(question,sizeof question,"Delete \"%.*s\"?",NAV_NAME_MAX-16,entry->name);if(!nav_confirm(question,draw_app,app))return;if(pane->provider->remove(pane->provider,entry->path,error,sizeof error))set_status(app,error);else set_status(app,"Deleted");refresh_pane(app,pane);}
+static void command_delete(NavApp *app)
+{
+    NavPane *pane = &app->panes[app->active];
+    const NavEntry *entry = nav_pane_selected(pane);
+    char question[NAV_NAME_MAX + 32], error[256] = {0};
+    if (!entry) {
+        set_warning(app, "No selected entry");
+        return;
+    }
+    if (entry->flags & NAV_ENTRY_PARENT) {
+        set_warning(app, "Parent entry cannot be deleted");
+        return;
+    }
+    if (!nav_provider_supports(pane->provider, NAV_CAP_DELETE) ||
+        !pane->provider->remove) {
+        set_warning(app, "Deletion is not supported");
+        return;
+    }
+    snprintf(question, sizeof question, "Delete \"%.*s\"?", NAV_NAME_MAX - 16, entry->name);
+    if (app->config.confirm_delete && !nav_ui_confirm(question, draw_app, app))
+        return;
+    if (pane->provider->remove(pane->provider, entry->resource_id, error, sizeof error))
+        set_error(app, error);
+    else {
+        set_notice(app, "Deleted");
+        refresh_pane(app, pane);
+    }
+}
 
-static void command_filter(NavApp *app){NavPane*pane=&app->panes[app->active];char original[NAV_NAME_MAX];snprintf(original,sizeof original,"%s",pane->filter);if(nav_prompt_text(" Filter ","Filter: ",pane->filter,sizeof pane->filter,draw_app,app)){snprintf(pane->filter,sizeof pane->filter,"%s",original);}nav_pane_clamp_selection(pane);nav_pane_ensure_visible(pane,nav_term_height()-5);}
+static void command_filter(NavApp *app)
+{
+    NavPane *pane = &app->panes[app->active];
+    char original[NAV_NAME_MAX];
+    snprintf(original, sizeof original, "%s", pane->filter);
+    if (nav_ui_prompt_text(" Filter ", "Filter: ", pane->filter, sizeof pane->filter, draw_app, app))
+    {
+        snprintf(pane->filter, sizeof pane->filter, "%s", original);
+    }
+    nav_pane_clamp_selection(pane);
+    nav_pane_ensure_visible(pane);
+}
 
-static void command_edit(NavApp *app){const NavEntry*entry=nav_pane_selected(&app->panes[app->active]);char error[256];if(!entry||entry->flags&NAV_ENTRY_DIR)return;nav_term_shutdown();if(nav_platform_launch_tdx(entry->path,error,sizeof error))set_status(app,error);nav_term_set_theme(nav_theme_classic_dos());if(nav_term_init()<0){set_status(app,"Unable to resume terminal");app->running=false;}}
+static void command_open_location(NavApp *app)
+{
+    NavPane *pane = &app->panes[app->active];
+    char location[NAV_PATH_MAX], error[256] = {0};
+    snprintf(location, sizeof location, "%s", pane->location.display_path);
+    if (nav_ui_prompt_text(" Open Location ", "Location: ", location,
+                        sizeof location, draw_app, app) || !location[0])
+        return;
+    if (pane->provider != nav_local_provider() && location[0] == '/') {
+        NavPane replacement = *pane;
+        NavProvider *old_provider = pane->provider;
+        memset(&replacement.location, 0, sizeof replacement.location);
+        memset(&replacement.listing, 0, sizeof replacement.listing);
+        memset(&replacement.history, 0, sizeof replacement.history);
+        replacement.history.current = -1;
+        replacement.provider = nav_local_provider();
+        if (nav_pane_open(&replacement, location, app->show_hidden,
+                          app->config.history_enabled, error, sizeof error)) {
+            nav_listing_free(&replacement.listing);
+            set_error(app, error[0] ? error : "Unable to open local location");
+            return;
+        }
+        nav_pane_sort(&replacement, replacement.sort_mode);
+        nav_listing_free(&pane->listing);
+        *pane = replacement;
+        nav_provider_destroy(old_provider);
+        set_notice(app, "Local location opened");
+    } else if (nav_pane_open(pane, location, app->show_hidden,
+                             app->config.history_enabled, error, sizeof error))
+        set_error(app, error[0] ? error : "Unable to open location");
+    else
+        nav_pane_sort(pane, pane->sort_mode);
+}
 
-static void dispatch(NavApp *app,Command command){NavPane*pane=&app->panes[app->active];switch(command){case CMD_VIEW:{const NavEntry*entry=nav_pane_selected(pane);if(entry&&!(entry->flags&NAV_ENTRY_DIR))nav_view_file(entry);break;}case CMD_EDIT:command_edit(app);break;case CMD_COPY:command_copy(app);break;case CMD_MOVE:command_move(app);break;case CMD_DELETE:command_delete(app);break;case CMD_MKDIR:command_mkdir(app);break;case CMD_QUIT:app->running=false;break;case CMD_REFRESH:refresh_pane(app,pane);break;case CMD_HIDDEN:app->show_hidden=!app->show_hidden;refresh_pane(app,&app->panes[0]);refresh_pane(app,&app->panes[1]);break;case CMD_SORT_NAME:nav_pane_sort(pane,NAV_SORT_NAME);break;case CMD_SORT_SIZE:nav_pane_sort(pane,NAV_SORT_SIZE);break;case CMD_SORT_DATE:nav_pane_sort(pane,NAV_SORT_DATE);break;case CMD_FILTER:command_filter(app);break;case CMD_HELP:show_help();break;case CMD_ABOUT:{const char*lines[]={"NAV 0.1","Keyboard-first local navigator","TDX/TDE interaction and visual conventions"};nav_info(" About NAV ",lines,3);break;}default:break;}}
+static int choose_repository(NavApp *app, const char *title)
+{
+    NavUiMenuItem items[NAV_REPOSITORY_MAX];
+    NavUiMenu menu;
+    int saved = 0, selected;
+    if (!app->config.repository_count) {
+        set_warning(app, "No repositories are configured");
+        return -1;
+    }
+    memset(items, 0, sizeof items);
+    for (size_t index = 0; index < app->config.repository_count; index++) {
+        items[index].line = app->config.repositories[index].name;
+        items[index].command = (int)index;
+        items[index].accelerator = index < 9 ? (char)('1' + index) : 0;
+    }
+    menu.label = title;
+    menu.minor = items;
+    menu.minor_count = app->config.repository_count;
+    menu.current = 0;
+    app->previous_mode = app->mode;
+    app->mode = NAV_MODE_MENU;
+    selected = nav_ui_pull_down(&menu, 1, &saved, draw_app, app);
+    app->mode = app->previous_mode;
+    return selected >= 0 && (size_t)selected < app->config.repository_count
+               ? selected : -1;
+}
 
-#define ITEM(label,command,key) {label,command,NULL,false,false,key}
-#define DISABLED(label,key) {label,CMD_NONE,NULL,true,false,key}
-#define SEPARATOR {NULL,CMD_NONE,NULL,true,true,0}
-static const TdxUiMenuItem file_items[]={ITEM("View",CMD_VIEW,'v'),ITEM("Edit",CMD_EDIT,'e'),ITEM("Copy",CMD_COPY,'c'),ITEM("Move/Rename",CMD_MOVE,'m'),ITEM("Delete",CMD_DELETE,'d'),ITEM("Make Directory",CMD_MKDIR,'a'),SEPARATOR,ITEM("Quit",CMD_QUIT,'q')};
-static const TdxUiMenuItem view_items[]={ITEM("Refresh",CMD_REFRESH,'r'),ITEM("Show Hidden",CMD_HIDDEN,'h'),SEPARATOR,ITEM("Sort By Name",CMD_SORT_NAME,'n'),ITEM("Sort By Size",CMD_SORT_SIZE,'s'),ITEM("Sort By Date",CMD_SORT_DATE,'d')};
-static const TdxUiMenuItem search_items[]={ITEM("Filter",CMD_FILTER,'f'),DISABLED("Find File",'i'),DISABLED("Search Contents",'c')};
-static const TdxUiMenuItem unavailable_items[]={DISABLED("Not available in local v0.1",'n')};
-static const TdxUiMenuItem help_items[]={ITEM("Keys",CMD_HELP,'k'),ITEM("About NAV",CMD_ABOUT,'a')};
-static TdxUiMenu menus[]={{"File",file_items,sizeof file_items/sizeof *file_items,0},{"View",view_items,sizeof view_items/sizeof *view_items,0},{"Search",search_items,sizeof search_items/sizeof *search_items,0},{"Transfer",unavailable_items,1,0},{"Repo",unavailable_items,1,0},{"Vault",unavailable_items,1,0},{"Options",unavailable_items,1,0},{"Help",help_items,sizeof help_items/sizeof *help_items,0}};
+static bool repository_name_available(const NavConfig *config,
+                                      const char *name, int except)
+{
+    for (size_t index = 0; index < config->repository_count; index++)
+        if ((int)index != except && !strcasecmp(config->repositories[index].name,
+                                                name))
+            return false;
+    return true;
+}
+
+static bool parse_repository_toggle(NavApp *app, const char *label,
+                                    const char *value, bool *output)
+{
+    if (!strcasecmp(value, "on") || !strcasecmp(value, "true") ||
+        !strcasecmp(value, "yes")) {
+        *output = true;
+        return true;
+    }
+    if (!strcasecmp(value, "off") || !strcasecmp(value, "false") ||
+        !strcasecmp(value, "no")) {
+        *output = false;
+        return true;
+    }
+    char error[96];
+    snprintf(error, sizeof error, "%s must be on or off", label);
+    set_warning(app, error);
+    return false;
+}
+
+static bool prompt_repository(NavApp *app, NavRepository *repository, int except)
+{
+    char normalized[NAV_URL_MAX], error[256] = {0};
+    char verify[8], writable[8], mkdir_value[8], delete_value[8], rename_value[8];
+    if (nav_ui_prompt_text(" Repository ", "Name: ", repository->name,
+                        sizeof repository->name, draw_app, app) ||
+        !repository->name[0])
+        return false;
+    if (!repository_name_available(&app->config, repository->name, except)) {
+        set_warning(app, "Repository names must be unique");
+        return false;
+    }
+    if (nav_ui_prompt_text(" Repository ", "URL: ", repository->url,
+                        sizeof repository->url, draw_app, app) ||
+        nav_repository_normalize_url(repository->url, normalized,
+                                     sizeof normalized, error, sizeof error)) {
+        if (error[0]) set_error(app, error);
+        return false;
+    }
+    snprintf(repository->url, sizeof repository->url, "%s", normalized);
+    if (nav_ui_prompt_text(" Repository ", "Credential (blank for anonymous): ",
+                           repository->credential,
+                           sizeof repository->credential, draw_app, app))
+        return false;
+    if (repository->credential[0] && strncasecmp(repository->url, "https://", 8)) {
+        set_error(app, "Credentialed repositories require HTTPS");
+        return false;
+    }
+    if (repository->credential[0] && app->credential_store &&
+        !nav_credential_store_is_locked(app->credential_store)) {
+        NavResolvedCredential resolved = {0};
+        if (nav_credential_store_resolve(app->credential_store,
+                                         repository->credential, &resolved,
+                                         error, sizeof error)) {
+            set_error(app, error);
+            return false;
+        }
+        nav_resolved_credential_free(&resolved);
+    }
+    snprintf(verify, sizeof verify, "%s", repository->tls_verify ? "on" : "off");
+    if (nav_ui_prompt_text(" Repository ", "Verify TLS (on/off): ", verify,
+                        sizeof verify, draw_app, app))
+        return false;
+    if (!parse_repository_toggle(app, "Verify TLS", verify,
+                                 &repository->tls_verify))
+        return false;
+    snprintf(writable, sizeof writable, "%s", repository->writable ? "on" : "off");
+    if (nav_ui_prompt_text(" Repository ", "Writable PUT (on/off): ", writable,
+                        sizeof writable, draw_app, app))
+        return false;
+    if (!parse_repository_toggle(app, "Writable", writable,
+                                 &repository->writable))
+        return false;
+    snprintf(mkdir_value, sizeof mkdir_value, "%s",
+             repository->mkdir_enabled ? "on" : "off");
+    if (nav_ui_prompt_text(" Repository ", "MkDir (on/off): ", mkdir_value,
+                        sizeof mkdir_value, draw_app, app) ||
+        !parse_repository_toggle(app, "MkDir", mkdir_value,
+                                 &repository->mkdir_enabled))
+        return false;
+    snprintf(delete_value, sizeof delete_value, "%s",
+             repository->delete_enabled ? "on" : "off");
+    if (nav_ui_prompt_text(" Repository ", "Delete (on/off): ", delete_value,
+                        sizeof delete_value, draw_app, app) ||
+        !parse_repository_toggle(app, "Delete", delete_value,
+                                 &repository->delete_enabled))
+        return false;
+    snprintf(rename_value, sizeof rename_value, "%s",
+             repository->rename_enabled ? "on" : "off");
+    if (nav_ui_prompt_text(" Repository ", "Rename (on/off): ", rename_value,
+                        sizeof rename_value, draw_app, app) ||
+        !parse_repository_toggle(app, "Rename", rename_value,
+                                 &repository->rename_enabled))
+        return false;
+    if (!repository->tls_verify &&
+        !nav_ui_confirm("TLS verification disabled; save insecure repository?",
+                     draw_app, app))
+        return false;
+    return true;
+}
+
+static void command_repository_add(NavApp *app)
+{
+    NavRepository repository = {.tls_verify = true};
+    char error[256] = {0};
+    if (app->config.repository_count == NAV_REPOSITORY_MAX) {
+        set_warning(app, "Repository limit reached");
+        return;
+    }
+    if (!prompt_repository(app, &repository, -1)) return;
+    app->config.repositories[app->config.repository_count++] = repository;
+    if (nav_config_save_repositories(&app->config, error, sizeof error)) {
+        app->config.repository_count--;
+        set_error(app, error);
+    } else set_notice(app, "Repository added");
+}
+
+static void command_repository_edit(NavApp *app)
+{
+    int index = choose_repository(app, "Edit Repository");
+    NavRepository original, edited;
+    char error[256] = {0};
+    if (index < 0) return;
+    original = edited = app->config.repositories[index];
+    if (!prompt_repository(app, &edited, index)) return;
+    app->config.repositories[index] = edited;
+    if (nav_config_save_repositories(&app->config, error, sizeof error)) {
+        app->config.repositories[index] = original;
+        set_error(app, error);
+    } else set_notice(app, "Repository updated; open panes keep their current settings");
+}
+
+static void command_repository_remove(NavApp *app)
+{
+    int index = choose_repository(app, "Remove Repository");
+    NavRepository removed;
+    char question[NAV_REPO_NAME_MAX + 40], error[256] = {0};
+    if (index < 0) return;
+    snprintf(question, sizeof question, "Remove repository \"%s\"?",
+             app->config.repositories[index].name);
+    if (!nav_ui_confirm(question, draw_app, app)) return;
+    removed = app->config.repositories[index];
+    memmove(&app->config.repositories[index],
+            &app->config.repositories[index + 1],
+            (app->config.repository_count - (size_t)index - 1) *
+            sizeof app->config.repositories[0]);
+    app->config.repository_count--;
+    if (nav_config_save_repositories(&app->config, error, sizeof error)) {
+        memmove(&app->config.repositories[index + 1],
+                &app->config.repositories[index],
+                (app->config.repository_count - (size_t)index) *
+                sizeof app->config.repositories[0]);
+        app->config.repositories[index] = removed;
+        app->config.repository_count++;
+        set_error(app, error);
+    } else set_notice(app, "Repository removed; open panes remain available");
+}
+
+typedef struct {
+    NavApp *app;
+    int selected;
+    bool exists;
+} VaultScreen;
+
+static void draw_vault(void *data)
+{
+    VaultScreen *screen = data;
+    NavCredentialStore *store = screen->app->credential_store;
+    int width = nav_term_width(), height = nav_term_height();
+    nav_term_clear(NAV_STYLE_BACKGROUND);
+    draw_commander_menu_bar();
+    if (width < 20 || height < 6) {
+        nav_ui_text(0, 1, width, "Vault", NAV_STYLE_DIALOG_TITLE);
+        nav_ui_text(0, 2, width, "Terminal too small", NAV_STYLE_WARNING);
+        return;
+    }
+    nav_ui_box(1, 1, width - 2, height - 2, " Credential Vault ", NAV_STYLE_DIALOG);
+    if (!screen->exists) {
+        nav_ui_text(3, 3, width - 6, "No vault yet", NAV_STYLE_TEXT_DIM);
+        nav_ui_text(3, 5, width - 6, "F7 Create Vault    F10 Close", NAV_STYLE_DIALOG);
+    } else if (nav_credential_store_is_locked(store)) {
+        nav_ui_text(3, 3, width - 6, "Vault locked", NAV_STYLE_WARNING);
+        nav_ui_text(3, 5, width - 6, "Enter/U Unlock    F10 Close", NAV_STYLE_DIALOG);
+    } else {
+        size_t count = nav_credential_store_count(store);
+        nav_ui_text(3, 3, width - 6, "Name                         Type     Username", NAV_STYLE_TEXT_DIM);
+        if (!count)
+            nav_ui_text(3, 5, width - 6, "No credentials", NAV_STYLE_TEXT_DIM);
+        for (size_t i = 0; i < count && 5 + (int)i < height - 3; i++) {
+            const NavCredential *item = nav_credential_store_get(store, i);
+            char line[512];
+            snprintf(line, sizeof line, "%-28.28s %-8s %s", item->name,
+                     item->type == NAV_CREDENTIAL_BASIC ? "Basic" : "Bearer",
+                     item->type == NAV_CREDENTIAL_BASIC ? item->username : "-");
+            nav_ui_text(3, 5 + (int)i, width - 6, line,
+                        (int)i == screen->selected ? NAV_STYLE_SELECTION : NAV_STYLE_DIALOG);
+        }
+        nav_ui_text(3, height - 3, width - 6,
+                    "F4 Edit   F7 New   F8 Delete   L Lock   F10 Close",
+                    NAV_STYLE_DIALOG);
+    }
+    if (screen->app->status[0])
+        nav_ui_text(3, height - 4, width - 6, screen->app->status,
+                    screen->app->status_kind == NAV_MESSAGE_ERROR ? NAV_STYLE_ERROR :
+                    screen->app->status_kind == NAV_MESSAGE_WARNING ? NAV_STYLE_WARNING :
+                    NAV_STYLE_TEXT_DIM);
+    nav_term_hide_cursor();
+}
+
+static void wipe_text(char *text, size_t size)
+{ nav_credential_secret_wipe(text, size); }
+
+static void vault_create_file(VaultScreen *screen, const char *path)
+{
+    char password[1024] = {0}, confirmation[1024] = {0}, error[256];
+    if (nav_ui_prompt_secret(" Create Vault ", "New master password: ", password,
+                             sizeof password, draw_vault, screen) ||
+        nav_ui_prompt_secret(" Create Vault ", "Confirm master password: ", confirmation,
+                             sizeof confirmation, draw_vault, screen)) goto done;
+    if (strcmp(password, confirmation)) set_warning(screen->app, "Master passwords do not match");
+    else if (nav_credential_store_create_vault(&screen->app->credential_store,
+                                                path, password, error,
+                                                sizeof error))
+        set_error(screen->app, error);
+    else { screen->exists = true; set_notice(screen->app, "Vault created and unlocked"); }
+done:
+    wipe_text(password, sizeof password); wipe_text(confirmation, sizeof confirmation);
+}
+
+static void vault_unlock(VaultScreen *screen)
+{
+    char password[1024] = {0}, error[256];
+    if (!nav_ui_prompt_secret(" Unlock Vault ", "Master password: ", password,
+                              sizeof password, draw_vault, screen)) {
+        if (nav_credential_store_unlock(screen->app->credential_store, password,
+                                        error, sizeof error)) set_error(screen->app, error);
+        else set_notice(screen->app, "Vault unlocked");
+    }
+    wipe_text(password, sizeof password);
+}
+
+static bool vault_prompt_secret(VaultScreen *screen, const char *label,
+                                const char *confirmation_label, char *secret,
+                                size_t capacity, bool optional)
+{
+    char confirmation[4096] = {0}; bool ok = false;
+    if (nav_ui_prompt_secret(" Credential ", label, secret, capacity,
+                             draw_vault, screen)) goto done;
+    if (optional && !secret[0]) { ok = true; goto done; }
+    if (!secret[0]) { set_warning(screen->app, "Secret must not be empty"); goto done; }
+    if (nav_ui_prompt_secret(" Credential ", confirmation_label, confirmation,
+                             sizeof confirmation, draw_vault, screen)) goto done;
+    if (strcmp(secret, confirmation)) set_warning(screen->app, "Secrets do not match");
+    else ok = true;
+done:
+    wipe_text(confirmation, sizeof confirmation); return ok;
+}
+
+static void vault_new(VaultScreen *screen)
+{
+    NavCredential item = {0}; char type[16] = "Basic", secret[4096] = {0}, error[256];
+    if (nav_ui_prompt_text(" Credential ", "Name: ", item.name, sizeof item.name,
+                           draw_vault, screen) || !item.name[0] ||
+        nav_ui_prompt_text(" Credential ", "Type (Basic/Bearer): ", type,
+                           sizeof type, draw_vault, screen)) goto done;
+    if (!strcasecmp(type, "basic")) {
+        item.type = NAV_CREDENTIAL_BASIC;
+        if (nav_ui_prompt_text(" Credential ", "Username: ", item.username,
+                               sizeof item.username, draw_vault, screen)) goto done;
+        if (!vault_prompt_secret(screen, "Password: ", "Confirm password: ",
+                                 secret, sizeof secret, false)) goto done;
+    } else if (!strcasecmp(type, "bearer")) {
+        item.type = NAV_CREDENTIAL_BEARER;
+        if (!vault_prompt_secret(screen, "Token: ", "Confirm token: ",
+                                 secret, sizeof secret, false)) goto done;
+    } else { set_warning(screen->app, "Type must be Basic or Bearer"); goto done; }
+    if (nav_credential_store_put(screen->app->credential_store, &item, secret,
+                                 false, error, sizeof error)) set_error(screen->app, error);
+    else set_notice(screen->app, "Credential created");
+done:
+    wipe_text(secret, sizeof secret);
+}
+
+static void vault_edit(VaultScreen *screen)
+{
+    const NavCredential *current = nav_credential_store_get(
+        screen->app->credential_store, (size_t)screen->selected);
+    NavCredential item; char secret[4096] = {0}, error[256];
+    if (!current) return;
+    item = *current; /* Names are immutable in vault format v1. */
+    if (item.type == NAV_CREDENTIAL_BASIC &&
+        nav_ui_prompt_text(" Edit Credential ", "Username: ", item.username,
+                           sizeof item.username, draw_vault, screen)) goto done;
+    if (!vault_prompt_secret(screen,
+            item.type == NAV_CREDENTIAL_BASIC ? "New password (blank keeps current): "
+                                              : "New token (blank keeps current): ",
+            item.type == NAV_CREDENTIAL_BASIC ? "Confirm password: " : "Confirm token: ",
+            secret, sizeof secret, true)) goto done;
+    if (nav_credential_store_put(screen->app->credential_store, &item,
+                                 secret[0] ? secret : NULL, true,
+                                 error, sizeof error)) set_error(screen->app, error);
+    else set_notice(screen->app, "Credential updated");
+done:
+    wipe_text(secret, sizeof secret);
+}
+
+static void command_vault(NavApp *app)
+{
+    char directory[NAV_PATH_MAX], path[NAV_PATH_MAX], error[256];
+    VaultScreen screen = {.app = app}; bool close = false;
+    if (nav_platform_config_dir(directory, sizeof directory) ||
+        snprintf(path, sizeof path, "%s/vault.bin", directory) >= (int)sizeof path) {
+        set_error(app, "Unable to determine vault path"); return;
+    }
+    screen.exists = access(path, F_OK) == 0;
+    if (screen.exists && !app->credential_store &&
+        nav_credential_store_open_vault(&app->credential_store, path, error,
+                                        sizeof error)) {
+        set_error(app, error); return;
+    }
+    while (!close) {
+        NavTermEvent event; size_t count;
+        draw_vault(&screen); nav_term_present();
+        if (nav_term_poll_event(&event, -1) <= 0 || event.type != NAV_TERM_EVENT_KEY) continue;
+        if (event.key == NAV_KEY_F10 || event.key == NAV_KEY_ESCAPE) close = true;
+        else if (!screen.exists && event.key == NAV_KEY_F7) vault_create_file(&screen, path);
+        else if (screen.exists && nav_credential_store_is_locked(app->credential_store) &&
+                 (event.key == NAV_KEY_ENTER || event.key == 'u' || event.key == 'U')) vault_unlock(&screen);
+        else if (screen.exists && !nav_credential_store_is_locked(app->credential_store)) {
+            count = nav_credential_store_count(app->credential_store);
+            if (event.key == NAV_KEY_UP && screen.selected > 0) screen.selected--;
+            else if (event.key == NAV_KEY_DOWN && screen.selected + 1 < (int)count) screen.selected++;
+            else if (event.key == NAV_KEY_F7) vault_new(&screen);
+            else if (event.key == NAV_KEY_F4) vault_edit(&screen);
+            else if (event.key == NAV_KEY_F8 && count) {
+                const NavCredential *item = nav_credential_store_get(app->credential_store, (size_t)screen.selected);
+                char question[160]; snprintf(question, sizeof question, "Delete credential \"%s\"?", item->name);
+                if (nav_ui_confirm(question, draw_vault, &screen)) {
+                    if (nav_credential_store_delete(app->credential_store, item->name, error, sizeof error)) set_error(app, error);
+                    else { if (screen.selected && screen.selected >= (int)count - 1) screen.selected--; set_notice(app, "Credential deleted"); }
+                }
+            } else if (event.key == 'l' || event.key == 'L') {
+                nav_credential_store_lock(app->credential_store); screen.selected = 0; set_notice(app, "Vault locked");
+            }
+        }
+    }
+}
+
+static void command_repository_open(NavApp *app)
+{
+    int index = choose_repository(app, "Open Repository");
+    NavPane *pane = &app->panes[app->active], replacement;
+    NavProvider *provider, *old_provider;
+    char error[256] = {0};
+    if (index < 0) return;
+    provider = nav_http_provider_create(&app->config.repositories[index],
+                                        app->credential_store, error,
+                                        sizeof error);
+    if (!provider) { set_error(app, error); return; }
+    replacement = *pane;
+    memset(&replacement.location, 0, sizeof replacement.location);
+    memset(&replacement.listing, 0, sizeof replacement.listing);
+    memset(&replacement.history, 0, sizeof replacement.history);
+    replacement.history.current = -1;
+    replacement.provider = provider;
+    replacement.filter[0] = 0;
+    set_status(app, "Loading repository...");
+    present_app(app);
+    if (nav_pane_open(&replacement, app->config.repositories[index].url,
+                      app->show_hidden, app->config.history_enabled,
+                      error, sizeof error)) {
+        nav_listing_free(&replacement.listing);
+        nav_provider_destroy(provider);
+        set_error(app, error[0] ? error : "Unable to open repository");
+        return;
+    }
+    nav_pane_sort(&replacement, replacement.sort_mode);
+    old_provider = pane->provider;
+    nav_listing_free(&pane->listing);
+    *pane = replacement;
+    nav_provider_destroy(old_provider);
+    set_notice(app, "Repository opened");
+}
+
+static void command_edit(NavApp *app)
+{
+    const NavEntry *entry = nav_pane_selected(&app->panes[app->active]);
+    char error[256];
+    const char *arguments[NAV_EDITOR_ARG_MAX];
+    for (size_t index = 0; index < app->config.editor_arg_count; index++)
+        arguments[index] = app->config.editor_args[index];
+    NavEditorConfig editor = {app->config.editor_command, arguments, app->config.editor_arg_count, app->config.editor_wait};
+    if (!entry || entry->flags & NAV_ENTRY_DIR || !nav_provider_supports(app->panes[app->active].provider, NAV_CAP_EDIT_LOCAL))
+        return;
+    nav_term_shutdown();
+    if (nav_platform_launch_editor(&editor, entry->resource_id, error, sizeof error))
+        set_error(app, error);
+    nav_term_set_theme(nav_theme_load(app->config.theme_name));
+    if (nav_term_init() < 0)
+    {
+        set_error(app, "Unable to resume terminal");
+        app->running = false;
+    }
+}
+
+static void command_open_config(NavApp *app)
+{
+    char directory[NAV_PATH_MAX], path[NAV_PATH_MAX], error[256];
+    const char *arguments[NAV_EDITOR_ARG_MAX];
+    if (nav_platform_config_dir(directory, sizeof directory) || snprintf(path, sizeof path, "%s/nav.toml", directory) >= (int)sizeof path)
+    {
+        set_error(app, "Configuration path is unavailable");
+        return;
+    }
+    for (size_t index = 0; index < app->config.editor_arg_count; index++)
+        arguments[index] = app->config.editor_args[index];
+    NavEditorConfig editor = {app->config.editor_command, arguments, app->config.editor_arg_count, app->config.editor_wait};
+    nav_term_shutdown();
+    if (nav_platform_launch_editor(&editor, path, error, sizeof error))
+        set_error(app, error);
+    nav_term_set_theme(nav_theme_load(app->config.theme_name));
+    if (nav_term_init() < 0)
+        app->running = false;
+}
+
+static void command_reload_config(NavApp *app)
+{
+    NavConfig candidate;
+    NavThemeResult theme_result;
+    static NavTheme running_theme;
+    char error[256] = {0};
+    if (nav_config_load(&candidate, error, sizeof error))
+    {
+        set_error(app, error[0] ? error : "Configuration reload failed");
+        return;
+    }
+    if (nav_theme_load_result(candidate.theme_name, &theme_result))
+    {
+        set_error(app, theme_result.error[0] ? theme_result.error : "Theme reload failed");
+        return;
+    }
+    app->config = candidate;
+    app->show_hidden = candidate.show_hidden;
+    running_theme = theme_result.theme;
+    nav_term_set_theme(&running_theme);
+    for (int index = 0; index < 2; index++)
+    {
+        app->panes[index].directories_first = candidate.directories_first;
+        app->panes[index].case_sensitive_sort = candidate.case_sensitive_sort;
+        app->panes[index].history_enabled = candidate.history_enabled;
+        app->panes[index].view = candidate.panel_view;
+        app->panes[index].history.limit = candidate.history_max_entries > NAV_HISTORY_MAX ? NAV_HISTORY_MAX : (int)candidate.history_max_entries;
+        refresh_pane(app, &app->panes[index]);
+    }
+    set_notice(app, "Configuration reloaded");
+}
+
+static void command_theme_info(NavApp *app)
+{
+    char name[128], id[128], style[64], source[512], reason[320];
+    NavThemeResult result;
+    nav_theme_load_result(app->config.theme_name, &result);
+    snprintf(name, sizeof name, "Theme: %s", result.theme.display_name);
+    snprintf(id, sizeof id, "ID: %s", app->config.theme_name);
+    snprintf(style, sizeof style, "Style: %s",
+             result.theme.style == NAV_UI_STYLE_CLASSIC ? "Classic" : "Modern");
+    snprintf(source, sizeof source, "Source: %.*s", (int)sizeof source - 9, result.path);
+    if (result.fallback)
+    {
+        snprintf(reason, sizeof reason, "Reason: %s", result.error[0] ? result.error : "theme file could not be loaded");
+        const char *lines[] = {name, id, style, source, reason};
+        nav_ui_info(" Current Theme ", lines, sizeof lines / sizeof *lines);
+    }
+    else
+    {
+        const char *lines[] = {name, id, style, source};
+        nav_ui_info(" Current Theme ", lines, sizeof lines / sizeof *lines);
+    }
+}
+
+static void dispatch(NavApp *app, Command command)
+{
+    NavPane *pane = &app->panes[app->active];
+    switch (command)
+    {
+    case CMD_NONE:
+        break;
+    case CMD_OPEN_LOCATION:
+        command_open_location(app);
+        break;
+    case CMD_VIEW:
+    {
+        const NavEntry *entry = nav_pane_selected(pane);
+        if (entry && !(entry->flags & NAV_ENTRY_DIR) && nav_provider_supports(pane->provider, NAV_CAP_READ))
+        {
+            assert(app->mode == NAV_MODE_COMMANDER);
+            app->previous_mode = app->mode;
+            app->mode = NAV_MODE_VIEWER;
+            nav_view_file(pane->provider, entry, &app->config);
+            app->mode = app->previous_mode;
+        }
+        break;
+    }
+    case CMD_PROPERTIES:
+    {
+        const NavEntry *entry = nav_pane_selected(pane);
+        if (entry)
+            nav_show_properties(entry, (entry->flags & NAV_ENTRY_DIR) ? "Type:      Directory" : "Type:      File");
+        break;
+    }
+    case CMD_EDIT:
+        command_edit(app);
+        break;
+    case CMD_COPY:
+        command_copy(app);
+        break;
+    case CMD_MOVE:
+        command_move(app);
+        break;
+    case CMD_DELETE:
+        command_delete(app);
+        break;
+    case CMD_MKDIR:
+        command_mkdir(app);
+        break;
+    case CMD_QUIT:
+        app->running = false;
+        break;
+    case CMD_REFRESH:
+        refresh_pane(app, pane);
+        break;
+    case CMD_HIDDEN:
+        app->show_hidden = !app->show_hidden;
+        refresh_pane(app, &app->panes[0]);
+        refresh_pane(app, &app->panes[1]);
+        break;
+    case CMD_SORT_NAME:
+        nav_pane_sort(pane, NAV_SORT_NAME);
+        break;
+    case CMD_SORT_SIZE:
+        nav_pane_sort(pane, NAV_SORT_SIZE);
+        break;
+    case CMD_SORT_DATE:
+        nav_pane_sort(pane, NAV_SORT_DATE);
+        break;
+    case CMD_PANEL_BRIEF:
+        pane->view = NAV_PANEL_BRIEF;
+        nav_pane_ensure_visible(pane);
+        break;
+    case CMD_PANEL_FULL:
+        pane->view = NAV_PANEL_FULL;
+        nav_pane_ensure_visible(pane);
+        break;
+    case CMD_FILTER:
+        command_filter(app);
+        break;
+    case CMD_HELP:
+        show_help();
+        break;
+    case CMD_ABOUT:
+    {
+        const char *lines[] = {"Navi8or 0.1", "Keyboard-first local and remote repository navigator", "TDX/TDE interaction and visual conventions"};
+        nav_ui_info(" About Navi8or ", lines, 3);
+        break;
+    }
+    case CMD_OPEN_CONFIG:
+        command_open_config(app);
+        break;
+    case CMD_RELOAD_CONFIG:
+        command_reload_config(app);
+        break;
+    case CMD_THEME_INFO:
+        command_theme_info(app);
+        break;
+    case CMD_REPOSITORY_OPEN:
+        command_repository_open(app);
+        break;
+    case CMD_REPOSITORY_ADD:
+        command_repository_add(app);
+        break;
+    case CMD_REPOSITORY_EDIT:
+        command_repository_edit(app);
+        break;
+    case CMD_REPOSITORY_REMOVE:
+        command_repository_remove(app);
+        break;
+    case CMD_VAULT:
+        command_vault(app);
+        break;
+    default:
+        break;
+    }
+}
+
+#define ITEM(label, command, key, binding) {label, command, NULL, false, false, key, binding}
+#define DISABLED(label, key) {label, CMD_NONE, NULL, true, false, key, NULL}
+#define SEPARATOR {NULL, CMD_NONE, NULL, true, true, 0, NULL}
+static const NavUiMenuItem file_items[] = {ITEM("Open Location", CMD_OPEN_LOCATION, 'o', NULL), ITEM("Properties", CMD_PROPERTIES, 'p', NULL), SEPARATOR, ITEM("Open Configuration", CMD_OPEN_CONFIG, 'c', NULL), ITEM("Reload Configuration", CMD_RELOAD_CONFIG, 'r', NULL), ITEM("Current Theme", CMD_THEME_INFO, 't', NULL), SEPARATOR, ITEM("Quit", CMD_QUIT, 'q', "F10")};
+static const NavUiMenuItem view_items[] = {ITEM("Refresh", CMD_REFRESH, 'r', NULL), ITEM("Show Hidden", CMD_HIDDEN, 'h', NULL), SEPARATOR, ITEM("Brief", CMD_PANEL_BRIEF, 'b', NULL), ITEM("Full", CMD_PANEL_FULL, 'f', NULL), SEPARATOR, ITEM("Sort By Name", CMD_SORT_NAME, 'n', NULL), ITEM("Sort By Size", CMD_SORT_SIZE, 's', NULL), ITEM("Sort By Date", CMD_SORT_DATE, 'd', NULL)};
+static NavUiMenuItem command_items[] = {ITEM("View", CMD_VIEW, 'v', "F3"), ITEM("Edit", CMD_EDIT, 'e', "F4"), ITEM("Copy", CMD_COPY, 'c', "F5"), ITEM("Move/Rename", CMD_MOVE, 'm', "F6"), ITEM("Make Directory", CMD_MKDIR, 'a', "F7"), ITEM("Delete", CMD_DELETE, 'd', "F8"), SEPARATOR, ITEM("Filter", CMD_FILTER, 'f', "/")};
+static const NavUiMenuItem repository_items[] = {
+    ITEM("Open Repository", CMD_REPOSITORY_OPEN, 'o', NULL),
+    ITEM("Add Repository", CMD_REPOSITORY_ADD, 'a', NULL),
+    ITEM("Edit Repository", CMD_REPOSITORY_EDIT, 'e', NULL),
+    ITEM("Remove Repository", CMD_REPOSITORY_REMOVE, 'r', NULL),
+    SEPARATOR,
+    ITEM("Credential Vault", CMD_VAULT, 'v', NULL)
+};
+static const NavUiMenuItem help_items[] = {ITEM("Keys", CMD_HELP, 'k', "F1"), ITEM("About Navi8or", CMD_ABOUT, 'a', NULL)};
+static NavUiMenu menus[] = {{"File", file_items, sizeof file_items / sizeof *file_items, 0}, {"View", view_items, sizeof view_items / sizeof *view_items, 0}, {"Command", command_items, sizeof command_items / sizeof *command_items, 0}, {"Repositories", repository_items, sizeof repository_items / sizeof *repository_items, 0}, {"Help", help_items, sizeof help_items / sizeof *help_items, 0}};
+static void draw_commander_menu_bar(void)
+{
+    nav_ui_draw_menu_bar(menus, sizeof menus / sizeof *menus);
+}
 static int saved_major_menu;
-static void open_menu(NavApp *app){int command=tdxui_pull_down(menus,sizeof menus/sizeof *menus,&saved_major_menu,draw_app,app);if(command>=0)dispatch(app,(Command)command);}
+static void open_menu(NavApp *app)
+{
+    int command;
+    /* Menu state follows capabilities, never a provider name. */
+    command_items[0].disabled = !command_available(app, CMD_VIEW);
+    command_items[1].disabled = !command_available(app, CMD_EDIT);
+    command_items[2].disabled = !command_available(app, CMD_COPY);
+    command_items[3].disabled = !command_available(app, CMD_MOVE);
+    command_items[4].disabled = !command_available(app, CMD_MKDIR);
+    command_items[5].disabled = !command_available(app, CMD_DELETE);
+    if (!app->config.menu_remember_position)
+    {
+        saved_major_menu = 0;
+        for (size_t index = 0; index < sizeof menus / sizeof *menus; index++)
+            menus[index].current = 0;
+    }
+    app->previous_mode = app->mode;
+    app->mode = NAV_MODE_MENU;
+    command = nav_ui_pull_down(menus, sizeof menus / sizeof *menus, &saved_major_menu, draw_app, app);
+    app->mode = app->previous_mode;
+    assert(app->mode == NAV_MODE_COMMANDER);
+    if (command >= 0)
+        dispatch(app, (Command)command);
+}
 
-static void navigate_parent(NavApp *app,NavPane *pane,bool history){char parent[NAV_PATH_MAX],error[256]={0};if(nav_path_parent(pane->path,parent,sizeof parent)==0&&nav_pane_load(pane,parent,app->show_hidden,history,error,sizeof error)==0)nav_pane_sort(pane,pane->sort_mode);else if(error[0])set_status(app,error);}
-static void activate(NavApp *app,NavPane *pane){const NavEntry*entry=nav_pane_selected(pane);char error[256];if(!entry)return;if(!(entry->flags&NAV_ENTRY_DIR)){dispatch(app,CMD_VIEW);return;}if(entry->flags&NAV_ENTRY_PARENT){navigate_parent(app,pane,true);return;}if(nav_pane_load(pane,entry->path,app->show_hidden,true,error,sizeof error))set_status(app,error);else nav_pane_sort(pane,pane->sort_mode);}
+static void navigate_parent(NavApp *app, NavPane *pane, bool history)
+{
+    char parent[NAV_PATH_MAX], error[256] = {0};
+    NavLocation parent_location;
+    (void)parent;
+    if (pane->provider->location_parent && pane->provider->location_parent(pane->provider, &pane->location, &parent_location, error, sizeof error) == 0 && nav_pane_load(pane, &parent_location, app->show_hidden, history && app->config.history_enabled, error, sizeof error) == 0)
+        nav_pane_sort(pane, pane->sort_mode);
+    else if (error[0])
+        set_error(app, error);
+}
+static void activate(NavApp *app, NavPane *pane)
+{
+    const NavEntry *entry = nav_pane_selected(pane);
+    char error[256];
+    if (!entry)
+        return;
+    if (!(entry->flags & NAV_ENTRY_DIR))
+    {
+        dispatch(app, CMD_VIEW);
+        return;
+    }
+    if (entry->flags & NAV_ENTRY_PARENT)
+    {
+        navigate_parent(app, pane, true);
+        return;
+    }
+    NavLocation child;
+    if (!pane->provider->location || pane->provider->location(pane->provider, entry->resource_id, &child, error, sizeof error) || nav_pane_load(pane, &child, app->show_hidden, app->config.history_enabled, error, sizeof error))
+        set_error(app, error);
+    else
+        nav_pane_sort(pane, pane->sort_mode);
+}
 
-int nav_ui_run(NavApp *app){
-    nav_term_set_theme(nav_theme_classic_dos());
-    if(nav_term_init()<0){fprintf(stderr,"nav: terminal initialization failed\n");return 1;}
-    set_status(app,"Ready");
-    while(app->running){
+int nav_ui_run(NavApp *app)
+{
+    /* Ctrl+\\ is Navi8or's TDX-derived menu key, not a process-quit request. */
+    signal(SIGQUIT, SIG_IGN);
+    nav_term_set_theme(nav_theme_load(app->config.theme_name));
+    if (nav_term_init() < 0)
+    {
+        fprintf(stderr, "nav: terminal initialization failed\n");
+        return 1;
+    }
+    set_status(app, "Ready");
+    app->mode = NAV_MODE_COMMANDER;
+    while (app->running)
+    {
         NavTermEvent event;
-        NavPane *pane=&app->panes[app->active];
+        NavPane *pane = &app->panes[app->active];
         present_app(app);
-        if(nav_term_poll_event(&event,-1)<=0)continue;
-        if(event.type==NAV_TERM_EVENT_RESIZE){for(int i=0;i<2;i++){nav_pane_clamp_selection(&app->panes[i]);nav_pane_ensure_visible(&app->panes[i],nav_term_height()-5);}continue;}
-        if(event.type!=NAV_TERM_EVENT_KEY)continue;
-        int key=event.key;
-        if(key==NAV_KEY_F10)dispatch(app,CMD_QUIT);
-        else if(key==NAV_KEY_F1)dispatch(app,CMD_HELP);
-        else if(key==NAV_KEY_F3)dispatch(app,CMD_VIEW);
-        else if(key==NAV_KEY_F4)dispatch(app,CMD_EDIT);
-        else if(key==NAV_KEY_F5)dispatch(app,CMD_COPY);
-        else if(key==NAV_KEY_F6)dispatch(app,CMD_MOVE);
-        else if(key==NAV_KEY_F7)dispatch(app,CMD_MKDIR);
-        else if(key==NAV_KEY_F8)dispatch(app,CMD_DELETE);
-        else if(key==NAV_KEY_F9||(key=='\\'&&(event.modifiers&NAV_MOD_CTRL)))open_menu(app);
-        else if(key==NAV_KEY_TAB)app->active=!app->active;
-        else if(key=='/')dispatch(app,CMD_FILTER);
-        else if(key==NAV_KEY_UP&&(event.modifiers&NAV_MOD_ALT))navigate_parent(app,pane,true);
-        else if(key==NAV_KEY_LEFT&&(event.modifiers&NAV_MOD_ALT)){const char*path=nav_history_back(&pane->history);char error[256];if(path&&nav_pane_load(pane,path,app->show_hidden,false,error,sizeof error)==0)nav_pane_sort(pane,pane->sort_mode);}
-        else if(key==NAV_KEY_RIGHT&&(event.modifiers&NAV_MOD_ALT)){const char*path=nav_history_forward(&pane->history);char error[256];if(path&&nav_pane_load(pane,path,app->show_hidden,false,error,sizeof error)==0)nav_pane_sort(pane,pane->sort_mode);}
-        else if(key==NAV_KEY_UP)pane->selected--;
-        else if(key==NAV_KEY_DOWN)pane->selected++;
-        else if(key==NAV_KEY_HOME)pane->selected=0;
-        else if(key==NAV_KEY_END)pane->selected=nav_pane_visible_count(pane)-1;
-        else if(key==NAV_KEY_PAGE_UP)pane->selected-=nav_term_height()-5;
-        else if(key==NAV_KEY_PAGE_DOWN)pane->selected+=nav_term_height()-5;
-        else if(key==NAV_KEY_BACKSPACE)navigate_parent(app,pane,true);
-        else if(key==NAV_KEY_ENTER)activate(app,pane);
+        if (nav_term_poll_event(&event, -1) <= 0)
+            continue;
+        if (event.type == NAV_TERM_EVENT_RESIZE)
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                nav_pane_clamp_selection(&app->panes[i]);
+                nav_pane_ensure_visible(&app->panes[i]);
+            }
+            continue;
+        }
+        if (event.type != NAV_TERM_EVENT_KEY)
+            continue;
+        int key = event.key;
+        if (key == NAV_KEY_F10)
+            dispatch(app, CMD_QUIT);
+        else if (key == NAV_KEY_F1)
+            dispatch(app, CMD_HELP);
+        else if (key == NAV_KEY_F3)
+            dispatch(app, CMD_VIEW);
+        else if (key == NAV_KEY_F4)
+            dispatch(app, CMD_EDIT);
+        else if (key == NAV_KEY_F5)
+            dispatch(app, CMD_COPY);
+        else if (key == NAV_KEY_F6)
+            dispatch(app, CMD_MOVE);
+        else if (key == NAV_KEY_F7)
+            dispatch(app, CMD_MKDIR);
+        else if (key == NAV_KEY_F8)
+            dispatch(app, CMD_DELETE);
+        else if (key == NAV_KEY_F2 || (key == '\\' && (event.modifiers & NAV_MOD_CTRL)))
+            open_menu(app);
+        else if (key == NAV_KEY_TAB)
+            app->active = !app->active;
+        else if (key == '/')
+            dispatch(app, CMD_FILTER);
+        else if (key == NAV_KEY_UP && (event.modifiers & NAV_MOD_ALT))
+            navigate_parent(app, pane, true);
+        else if (key == NAV_KEY_LEFT && (event.modifiers & NAV_MOD_ALT))
+        {
+            const NavLocation *location = nav_history_back(&pane->history);
+            char error[256];
+            if (location && nav_pane_load(pane, location, app->show_hidden, false, error, sizeof error) == 0)
+                nav_pane_sort(pane, pane->sort_mode);
+        }
+        else if (key == NAV_KEY_RIGHT && (event.modifiers & NAV_MOD_ALT))
+        {
+            const NavLocation *location = nav_history_forward(&pane->history);
+            char error[256];
+            if (location && nav_pane_load(pane, location, app->show_hidden, false, error, sizeof error) == 0)
+                nav_pane_sort(pane, pane->sort_mode);
+        }
+        else if (key == NAV_KEY_UP)
+            nav_pane_move(pane, -1);
+        else if (key == NAV_KEY_DOWN)
+            nav_pane_move(pane, 1);
+        else if (key == NAV_KEY_LEFT && pane->view == NAV_PANEL_BRIEF)
+            nav_pane_move(pane, -pane->rows_per_column);
+        else if (key == NAV_KEY_RIGHT && pane->view == NAV_PANEL_BRIEF)
+            nav_pane_move(pane, pane->rows_per_column);
+        else if (key == NAV_KEY_HOME)
+            pane->selected = 0;
+        else if (key == NAV_KEY_END)
+            pane->selected = nav_pane_visible_count(pane) - 1;
+        else if (key == NAV_KEY_PAGE_UP && (event.modifiers & NAV_MOD_CTRL))
+            navigate_parent(app, pane, true);
+        else if (key == NAV_KEY_PAGE_DOWN && (event.modifiers & NAV_MOD_CTRL))
+            activate(app, pane);
+        else if (key == NAV_KEY_PAGE_UP)
+            nav_pane_page(pane, -1);
+        else if (key == NAV_KEY_PAGE_DOWN)
+            nav_pane_page(pane, 1);
+        else if ((key == 'r' || key == 'R') && (event.modifiers & NAV_MOD_CTRL))
+            refresh_pane(app, pane);
+        else if ((key == 'u' || key == 'U') && (event.modifiers & NAV_MOD_CTRL))
+        {
+            NavPane temporary = app->panes[0];
+            app->panes[0] = app->panes[1];
+            app->panes[1] = temporary;
+        }
+        else if (key == NAV_KEY_BACKSPACE)
+            navigate_parent(app, pane, true);
+        else if (key == NAV_KEY_ENTER)
+            activate(app, pane);
         nav_pane_clamp_selection(pane);
-        nav_pane_ensure_visible(pane,nav_term_height()-5);
+        nav_pane_ensure_visible(pane);
     }
     nav_term_shutdown();
     return 0;

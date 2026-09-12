@@ -1,0 +1,138 @@
+[theme]
+format = 2
+name = "Violet Night"
+
+[ui]
+style = "modern"
+
+[ui.header]
+foreground = "light_magenta"
+background = "black"
+
+[ui.status]
+foreground = "light_cyan"
+background = "black"
+
+[ui.message]
+foreground = "white"
+background = "red"
+
+[ui.text]
+foreground = "light_gray"
+background = "black"
+
+[ui.accent]
+foreground = "light_cyan"
+background = "black"
+
+[ui.surface_alt]
+foreground = "black"
+background = "light_magenta"
+
+[ui.dialog]
+foreground = "white"
+background = "dark_gray"
+
+[ui.dialog_title]
+foreground = "light_magenta"
+background = "dark_gray"
+
+[ui.text_dim]
+foreground = "dark_gray"
+background = "black"
+
+[ui.selection]
+foreground = "black"
+background = "light_magenta"
+
+[ui.keybar]
+foreground = "black"
+background = "light_magenta"
+
+[ui.keybar_selected]
+foreground = "yellow"
+background = "magenta"
+
+[ui.keybar_key]
+foreground = "yellow"
+background = "magenta"
+
+[ui.keybar_disabled]
+foreground = "dark_gray"
+background = "light_magenta"
+
+[ui.menu]
+foreground = "light_gray"
+background = "black"
+
+[ui.menu_disabled]
+foreground = "dark_gray"
+background = "black"
+
+[ui.menu_selected]
+foreground = "light_cyan"
+background = "black"
+
+[ui.menu_selected_disabled]
+foreground = "light_red"
+background = "black"
+
+[ui.frame]
+style = "single"
+space = false
+shadow = true
+
+[ui.viewer_line_number]
+foreground = "magenta"
+background = "black"
+
+[ui.viewer_search_match]
+foreground = "black"
+background = "yellow"
+
+[ui.progress]
+foreground = "black"
+background = "light_magenta"
+
+[ui.pane_title]
+foreground = "light_magenta"
+background = "black"
+
+[ui.pane_title_active]
+foreground = "white"
+background = "magenta"
+
+[ui.background]
+foreground = "light_gray"
+background = "black"
+
+[ui.surface]
+foreground = "light_gray"
+background = "black"
+
+[ui.border]
+foreground = "magenta"
+background = "black"
+
+[ui.border_active]
+foreground = "white"
+background = "magenta"
+
+[ui.selection_inactive]
+foreground = "light_gray"
+background = "black"
+
+[ui.error]
+foreground = "white"
+background = "red"
+
+[ui.warning]
+foreground = "light_cyan"
+background = "black"
+
+[symbols]
+directory = "▸"
+parent = "↑"
+selected = "»"
+upload = "↑"
+download = "↓"

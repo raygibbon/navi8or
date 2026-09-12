@@ -1,0 +1,138 @@
+[theme]
+format = 2
+name = "Commander"
+
+[ui]
+style = "classic"
+
+[ui.header]
+foreground = "white"
+background = "blue"
+
+[ui.status]
+foreground = "yellow"
+background = "blue"
+
+[ui.message]
+foreground = "white"
+background = "red"
+
+[ui.text]
+foreground = "light_gray"
+background = "blue"
+
+[ui.accent]
+foreground = "white"
+background = "blue"
+
+[ui.surface_alt]
+foreground = "black"
+background = "cyan"
+
+[ui.dialog]
+foreground = "black"
+background = "light_gray"
+
+[ui.dialog_title]
+foreground = "blue"
+background = "light_gray"
+
+[ui.text_dim]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.selection]
+foreground = "black"
+background = "cyan"
+
+[ui.keybar]
+foreground = "white"
+background = "blue"
+
+[ui.keybar_selected]
+foreground = "yellow"
+background = "blue"
+
+[ui.keybar_key]
+foreground = "white"
+background = "blue"
+
+[ui.keybar_disabled]
+foreground = "dark_gray"
+background = "blue"
+
+[ui.menu]
+foreground = "black"
+background = "cyan"
+
+[ui.menu_disabled]
+foreground = "dark_gray"
+background = "cyan"
+
+[ui.menu_selected]
+foreground = "white"
+background = "blue"
+
+[ui.menu_selected_disabled]
+foreground = "light_red"
+background = "blue"
+
+[ui.frame]
+style = "combine"
+space = true
+shadow = true
+
+[ui.viewer_line_number]
+foreground = "cyan"
+background = "blue"
+
+[ui.viewer_search_match]
+foreground = "black"
+background = "yellow"
+
+[ui.progress]
+foreground = "black"
+background = "cyan"
+
+[ui.pane_title]
+foreground = "white"
+background = "blue"
+
+[ui.pane_title_active]
+foreground = "yellow"
+background = "blue"
+
+[ui.background]
+foreground = "light_gray"
+background = "blue"
+
+[ui.surface]
+foreground = "light_gray"
+background = "blue"
+
+[ui.border]
+foreground = "cyan"
+background = "blue"
+
+[ui.border_active]
+foreground = "yellow"
+background = "blue"
+
+[ui.selection_inactive]
+foreground = "light_gray"
+background = "blue"
+
+[ui.error]
+foreground = "white"
+background = "red"
+
+[ui.warning]
+foreground = "yellow"
+background = "blue"
+
+[symbols]
+directory = "►"
+parent = "↑"
+selected = "»"
+upload = "↑"
+download = "↓"

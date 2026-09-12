@@ -1,0 +1,42 @@
+[theme]
+name = "Legacy fixture"
+
+[tdx.text]
+foreground = "light_gray"
+background = "blue"
+
+[tdx.hilited_file]
+foreground = "yellow"
+background = "red"
+
+[tdx.curl]
+foreground = "white"
+background = "blue"
+
+[tdx.disabled]
+foreground = "dark_gray"
+background = "cyan"
+
+[tdx.menu_header]
+foreground = "black"
+background = "cyan"
+
+[tdx.menu_selected]
+foreground = "yellow"
+background = "cyan"
+
+[tdx.menu_item]
+foreground = "white"
+background = "green"
+
+[tdx.frame]
+style = "double"
+space = false
+shadow = false
+
+[navigator.pane_title_active]
+foreground = "yellow"
+background = "cyan"
+
+[symbols]
+directory = "D"

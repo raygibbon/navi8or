@@ -1,0 +1,29 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "nav requested build",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"clean"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "nav requested clean build",
+			"type": "shell",
+			"command": "make clean && make",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "nav vendor verification",
+			"type": "shell",
+			"command": "make verify-vendor",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
