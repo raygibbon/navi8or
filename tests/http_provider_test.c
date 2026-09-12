@@ -100,6 +100,56 @@ static const NavEntry *find_entry(const NavListing *listing, const char *name)
     return NULL;
 }
 
+static void test_stream_redirects(NavProvider *provider, const char *root)
+{
+    static const struct {
+        const char *path;
+        const char *failure;
+    } cases[] = {
+        {"direct", NULL}, {"absolute", NULL}, {"relative", NULL},
+        {"status301", NULL}, {"status303", NULL}, {"status307", NULL},
+        {"status308", NULL}, {"limit/5", NULL},
+        {"outside", "repository root"}, {"cross", "repository root"},
+        {"traversal", "repository root"}, {"encoded", "repository root"},
+        {"encoded-slash", "repository root"},
+        {"chain", "repository root"}, {"limit/6", "redirect"},
+        {"missing", "404"}, {"denied", "403"}, {"unauthorized", "401"},
+    };
+    for (size_t index = 0; index < sizeof cases / sizeof cases[0]; index++) {
+        char url[NAV_URL_MAX], error[256] = {0};
+        void *handle = NULL;
+        size_t total = 0;
+        snprintf(url, sizeof url, "%s%s", root, cases[index].path);
+        assert(provider->open_read(provider, url, &handle, error,
+                                   sizeof error) == 0);
+        for (;;) {
+            unsigned char buffer[37];
+            size_t got = 999;
+            memset(buffer, 0xa5, sizeof buffer);
+            int result = provider->read(provider, handle, buffer, sizeof buffer,
+                                        &got, error, sizeof error);
+            if (cases[index].failure) {
+                assert(result != 0 && got == 0 && total == 0);
+                assert(strstr(error, cases[index].failure));
+                /* A failure must not even modify the supplied buffer. */
+                for (size_t byte = 0; byte < sizeof buffer; byte++)
+                    assert(buffer[byte] == 0xa5);
+                assert(provider->read(provider, handle, buffer, sizeof buffer,
+                                       &got, error, sizeof error) != 0);
+                assert(got == 0);
+                break;
+            }
+            if (result) fprintf(stderr, "stream %s after %zu bytes: %s\n",
+                                cases[index].path, total, error);
+            assert(result == 0);
+            for (size_t byte = 0; byte < got; byte++) assert(buffer[byte] == 'S');
+            total += got;
+            if (!got) { assert(total == 128 * 1024); break; }
+        }
+        assert(provider->close(provider, handle, error, sizeof error) == 0);
+    }
+}
+
 int main(int argc, char **argv)
 {
     NavRepository repository = {.tls_verify = false};
@@ -240,6 +290,15 @@ int main(int argc, char **argv)
     provider = nav_http_provider_create(&repository, credential_store,
                                         error, sizeof error);
     assert(provider);
+    if (argc == 8 && !strcmp(argv[7], "stream-redirects")) {
+        test_stream_redirects(provider, repository.url);
+        nav_provider_destroy(provider);
+        if (credential_store) {
+            nav_credential_store_close(credential_store);
+            assert(unlink(vault_path) == 0);
+        }
+        return 0;
+    }
     if (argc == 8 && !strcmp(argv[7], "redirect")) {
         NavListing listing = {0};
         assert(provider->list(provider, repository.url, false, &listing,

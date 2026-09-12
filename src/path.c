@@ -28,7 +28,12 @@ int nav_path_normalize(const char *in, char *out, size_t n) {
                 --count;
             continue;
         }
+        if (count < 512) {
         parts[count++] = tok;
+        } else {
+            /* Too many components; treat as error */
+        return -1;
+}
     }
     if (n < 2)
         return -1;
@@ -39,3 +44,4 @@ int nav_path_normalize(const char *in, char *out, size_t n) {
 }
 int nav_path_join(const char *a, const char *b, char *o, size_t n) { char temp[NAV_PATH_MAX]; if (snprintf(temp, sizeof temp, "%s/%s", a, b) >= (int)sizeof temp) return -1; return nav_path_normalize(temp, o, n); }
 int nav_path_parent(const char *p, char *o, size_t n) { return nav_path_join(p, "..", o, n); }
+

@@ -209,10 +209,22 @@ static void test_leaf_name_bounds(void)
     assert(!strcmp(copied, maximum));
     assert(!nav_leaf_name_copy(copied, oversized));
 }
+static void test_path_normalize_component_limit(void)
+{
+    char long_path[NAV_PATH_MAX] = "/";
+    for (int i = 0; i < 513; ++i) {
+        if (i > 0) strcat(long_path, "/");
+        strcat(long_path, "a");
+    }
+    char out[NAV_PATH_MAX];
+    assert(nav_path_normalize(long_path, out, sizeof out) == -1);
+}
+
 int main(void){char root[]="/tmp/nav-test-XXXXXX",source[NAV_PATH_MAX],destination[NAV_PATH_MAX],small[NAV_PATH_MAX],error[256];unsigned char data[200000];NavProvider*provider=nav_local_provider();Progress state={0};FILE*file;struct stat st;NavPane pane={0};NavHistory history={.current=-1};NavLocation one={0},two={0},three={0};
     test_synthetic_brief();
     test_commander_layout();
     test_leaf_name_bounds();
+    test_path_normalize_component_limit();
     assert(mkdtemp(root)!=NULL);assert(nav_path_join(root,"file 'with spaces'.bin",source,sizeof source)==0);assert(nav_path_join(root,"copy.bin",destination,sizeof destination)==0);
     for(size_t i=0;i<sizeof data;i++)data[i]=(unsigned char)(i&255);
     file=fopen(source,"wb");assert(file);assert(fwrite(data,1,sizeof data,file)==sizeof data);assert(fclose(file)==0);

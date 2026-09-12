@@ -911,6 +911,94 @@ def run_server(executable, tls, verify, expect_success, certificate=None,
             raise RuntimeError("remote child directory was not fetched")
 
 
+def run_stream_redirect_tests(executable, certificate=None, key=None,
+                              auth_mode="none", secret=""):
+    class StreamHandler(DirectoryHandler):
+        requests = []
+        expected_authorization = None
+
+        def do_GET(self):
+            if not self.authorize():
+                return
+            path = self.path
+            targets = {
+                "/root/absolute": origin_url + "/root/direct",
+                "/root/relative": "sub/../direct",
+                "/root/outside": "/external",
+                "/root/cross": sink_url + "/root/direct",
+                "/root/traversal": "../external",
+                "/root/encoded": "/root/%2e%2e/external",
+                "/root/encoded-slash": "/root/%2e%2e%2fexternal",
+                "/root/chain": "relative-outside",
+                "/root/relative-outside": "/external",
+            }
+            status = 302
+            target = targets.get(path)
+            if path.startswith("/root/status"):
+                status = int(path.removeprefix("/root/status"))
+                target = "direct"
+            if path.startswith("/root/limit/"):
+                remaining = int(path.rsplit("/", 1)[1])
+                if remaining:
+                    target = str(remaining - 1)
+            if not target:
+                status = {"/root/missing": 404, "/root/denied": 403,
+                          "/root/unauthorized": 401}.get(path, 200)
+            body = (b"R" if target else b"S") * (128 * 1024)
+            self.record(served=len(body), status=status)
+            self.send_response(status)
+            if target:
+                self.send_header("Location", target)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    if auth_mode == "basic":
+        encoded = base64.b64encode(f"navi8or:{secret}".encode()).decode()
+        StreamHandler.expected_authorization = f"Basic {encoded}"
+    elif auth_mode == "bearer":
+        StreamHandler.expected_authorization = f"Bearer {secret}"
+    sink_handler = type("StreamSink", (StreamHandler,), {
+        "requests": [], "expected_authorization": None,
+    })
+    origin = QuietThreadingHTTPServer(("127.0.0.1", 0), StreamHandler)
+    sink = QuietThreadingHTTPServer(("127.0.0.1", 0), sink_handler)
+    servers = (origin, sink)
+    if certificate:
+        for server in servers:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(certificate, key)
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+    scheme = "https" if certificate else "http"
+    origin_url = f"{scheme}://localhost:{origin.server_port}"
+    sink_url = f"{scheme}://localhost:{sink.server_port}"
+    threads = [threading.Thread(target=server.serve_forever, daemon=True)
+               for server in servers]
+    for thread in threads:
+        thread.start()
+    try:
+        subprocess.run([executable, origin_url + "/root/", "0", "1", "0",
+                        auth_mode, secret, "stream-redirects"], check=True,
+                       timeout=60)
+        assert not sink_handler.requests, "stream redirect reached another origin"
+        paths = [request["path"] for request in StreamHandler.requests]
+        assert "/external" not in paths
+        assert not any("%" in path for path in paths)
+        assert paths.count("/root/limit/0") == 1
+        assert paths.count("/root/limit/1") == 2
+        if StreamHandler.expected_authorization:
+            expected = hashlib.sha256(
+                StreamHandler.expected_authorization.encode()).hexdigest()
+            assert all(request["authorization_sha256"] == expected
+                       for request in StreamHandler.requests)
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=2)
+
+
 def run_cross_origin_redirect_test(executable, certificate, key):
     sink_handler = type("RedirectSinkHandler", (DirectoryHandler,), {
         "requests": [], "expected_authorization": None, "root_redirect": None,
@@ -999,6 +1087,7 @@ def main():
         return 2
     executable = os.path.abspath(sys.argv[1])
     nav = os.path.abspath(sys.argv[2])
+    run_stream_redirect_tests(executable)
     line_count = 50 * 1024 * 1024 // 64
     large = bytearray(50 * 1024 * 1024)
     for index in range(line_count):
@@ -1031,6 +1120,10 @@ def main():
             "-subj", "/CN=localhost",
             "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run_stream_redirect_tests(executable, certificate, key,
+                                  "basic", "testpass")
+        run_stream_redirect_tests(executable, certificate, key,
+                                  "bearer", "navi8or-test-token-12345")
         run_server(executable, True, False, True, certificate, key)
         run_server(executable, True, False, True, certificate, key,
                    auth_mode="basic", client_secret="testpass")

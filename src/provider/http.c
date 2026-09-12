@@ -7,6 +7,7 @@
 #include <strings.h>
 
 #define HTTP_LISTING_LIMIT (4u * 1024u * 1024u)
+#define HTTP_REDIRECT_LIMIT 5L
 
 typedef struct
 {
@@ -37,9 +38,12 @@ typedef struct
     unsigned char *target;
     size_t target_capacity, target_used;
     long response_status;
+    long redirects;
+    bool outside_root;
     bool paused, complete, failed;
     CURLcode result;
     char curl_error[CURL_ERROR_SIZE];
+    char redirect_location[NAV_URL_MAX];
     NavResolvedCredential credential;
 } HttpRead;
 
@@ -169,7 +173,7 @@ static int configure_request(HttpProvider *http, CURL *easy,
     memset(credential, 0, sizeof *credential);
     curl_easy_setopt(easy, CURLOPT_URL, resource_id);
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(easy, CURLOPT_MAXREDIRS, 5L);
+    curl_easy_setopt(easy, CURLOPT_MAXREDIRS, HTTP_REDIRECT_LIMIT);
     curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 3L);
     curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
     curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 15L);
@@ -510,8 +514,19 @@ static size_t read_header(char *data, size_t size, size_t count, void *userdata)
     amount = size * count;
     if (amount >= 5 && !strncasecmp(data, "HTTP/", 5)) {
         long status = 0;
+        read->redirect_location[0] = 0;
         if (sscanf(data, "HTTP/%*s %ld", &status) == 1)
             read->response_status = status;
+    } else if (read->response_status >= 300 && read->response_status < 400 &&
+               amount >= 9 && !strncasecmp(data, "Location:", 9)) {
+        const char *start = data + 9, *end = data + amount;
+        while (start < end && isspace((unsigned char)*start)) start++;
+        while (end > start && isspace((unsigned char)end[-1])) end--;
+        size_t length = (size_t)(end - start);
+        if (length >= sizeof read->redirect_location ||
+            memchr(start, 0, length)) return 0;
+        memcpy(read->redirect_location, start, length);
+        read->redirect_location[length] = 0;
     }
     return amount;
 }
@@ -524,6 +539,14 @@ static size_t stream_data(char *data, size_t size, size_t count, void *userdata)
     amount = size * count;
     if (read->response_status < 200 || read->response_status >= 300)
         return amount;
+    /* Check before copying into either the caller's buffer or pending data. */
+    char *effective = NULL;
+    if (curl_easy_getinfo(read->easy, CURLINFO_EFFECTIVE_URL, &effective) !=
+            CURLE_OK || !effective ||
+        !url_is_within_root(read->provider, effective)) {
+        read->outside_root = true;
+        return 0;
+    }
     if (read->pending_offset < read->pending_length) {
         read->paused = true;
         return CURL_WRITEFUNC_PAUSE;
@@ -574,17 +597,21 @@ static int http_open_read(NavProvider *provider, const char *resource_id,
     }
     if (configure_request(http, read->easy, resource_id, &read->credential,
                           error, error_size)) {
+        nav_resolved_credential_free(&read->credential);
         curl_multi_cleanup(read->multi);
         curl_easy_cleanup(read->easy);
         free(read);
         return -1;
     }
+    /* Only read_redirect may advance to another, validated target. */
+    curl_easy_setopt(read->easy, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(read->easy, CURLOPT_WRITEFUNCTION, stream_data);
     curl_easy_setopt(read->easy, CURLOPT_WRITEDATA, read);
     curl_easy_setopt(read->easy, CURLOPT_HEADERFUNCTION, read_header);
     curl_easy_setopt(read->easy, CURLOPT_HEADERDATA, read);
     curl_easy_setopt(read->easy, CURLOPT_ERRORBUFFER, read->curl_error);
     if (curl_multi_add_handle(read->multi, read->easy) != CURLM_OK) {
+        nav_resolved_credential_free(&read->credential);
         curl_multi_cleanup(read->multi);
         curl_easy_cleanup(read->easy);
         free(read);
@@ -604,6 +631,57 @@ static void read_completion(HttpRead *read)
             read->complete = true;
             read->result = message->data.result;
         }
+}
+
+static int read_redirect(HttpRead *read, char *error, size_t error_size)
+{
+    char *redirect = NULL, *effective = NULL;
+    char target[NAV_URL_MAX];
+    CURLcode code;
+    CURLMcode multi_code;
+    if (!read->complete || read->result != CURLE_OK) return 0;
+    code = curl_easy_getinfo(read->easy, CURLINFO_REDIRECT_URL, &redirect);
+    if (code != CURLE_OK) goto curl_error;
+    if (!redirect) return 0;
+    if (read->redirects >= HTTP_REDIRECT_LIMIT) {
+        code = CURLE_TOO_MANY_REDIRECTS;
+        goto curl_error;
+    }
+    code = curl_easy_getinfo(read->easy, CURLINFO_EFFECTIVE_URL, &effective);
+    if (code != CURLE_OK) goto curl_error;
+    /* REDIRECT_URL identifies redirects libcurl would follow, but can contain
+       configured credentials. Resolve the original Location instead, retaining
+       the existing parser's rejection of credentials supplied in URLs. */
+    if (!effective || !read->redirect_location[0]) {
+        snprintf(error, error_size, "invalid HTTP redirect target");
+        return -1;
+    }
+    if (resolve_url(effective, read->redirect_location, target, sizeof target,
+                    error, error_size))
+        return -1;
+    if (!url_is_within_root(read->provider, target)) {
+        snprintf(error, error_size, "HTTP redirect left repository root");
+        return -1;
+    }
+    multi_code = curl_multi_remove_handle(read->multi, read->easy);
+    if (multi_code != CURLM_OK) goto multi_error;
+    code = curl_easy_setopt(read->easy, CURLOPT_URL, target);
+    if (code != CURLE_OK) goto curl_error;
+    read->redirects++;
+    read->response_status = 0;
+    read->complete = false;
+    read->curl_error[0] = 0;
+    /* Reuse the configured handle and its owned credential for in-root hops. */
+    multi_code = curl_multi_add_handle(read->multi, read->easy);
+    if (multi_code != CURLM_OK) goto multi_error;
+    return 0;
+curl_error:
+    snprintf(error, error_size, "HTTP read failed: %s", curl_easy_strerror(code));
+    return -1;
+multi_error:
+    snprintf(error, error_size, "HTTP read failed: %s",
+             curl_multi_strerror(multi_code));
+    return -1;
 }
 
 static int http_read(NavProvider *provider, void *handle, void *buffer,
@@ -654,6 +732,10 @@ static int http_read(NavProvider *provider, void *handle, void *buffer,
             return -1;
         }
         read_completion(read);
+        if (read_redirect(read, error, error_size)) {
+            read->failed = true;
+            return -1;
+        }
         if (read->target_used == capacity || read->paused || read->complete) break;
         if (running) {
             multi_code = curl_multi_poll(read->multi, NULL, 0, 1000, NULL);
@@ -664,6 +746,11 @@ static int http_read(NavProvider *provider, void *handle, void *buffer,
                 return -1;
             }
         }
+    }
+    if (read->outside_root) {
+        snprintf(error, error_size, "HTTP redirect left repository root");
+        read->failed = true;
+        return -1;
     }
     if (read->complete && read->result != CURLE_OK) {
         snprintf(error, error_size, "HTTP read failed: %s",

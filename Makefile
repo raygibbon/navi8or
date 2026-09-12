@@ -1,10 +1,20 @@
 CC ?= cc
 PKG_CONFIG ?= pkg-config
+.CURDIR := $(shell pwd)
 .DEFAULT_GOAL := all
-CURL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags libcurl 2>/dev/null)
-CURL_LIBS ?= $(shell $(PKG_CONFIG) --libs libcurl 2>/dev/null)
-SODIUM_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags libsodium 2>/dev/null)
-SODIUM_LIBS ?= $(shell $(PKG_CONFIG) --libs libsodium 2>/dev/null)
+
+# Try pkg-config first, then curl-config as fallback for libcurl
+# For Homebrew on Bazzite, also try with Homebrew's pkgconfig path
+CURL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags libcurl 2>/dev/null || \
+		curl-config --cflags 2>/dev/null || \
+		PKG_CONFIG_PATH=$$(brew --prefix libsodium)/lib/pkgconfig:$$(brew --prefix curl)/lib/pkgconfig $(PKG_CONFIG) --cflags libcurl 2>/dev/null)
+CURL_LIBS ?= $(shell $(PKG_CONFIG) --libs libcurl 2>/dev/null || \
+		curl-config --libs 2>/dev/null || \
+		PKG_CONFIG_PATH=$$(brew --prefix libsodium)/lib/pkgconfig:$$(brew --prefix curl)/lib/pkgconfig $(PKG_CONFIG) --libs libcurl 2>/dev/null)
+SODIUM_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags libsodium 2>/dev/null || \
+		PKG_CONFIG_PATH=$$(brew --prefix libsodium)/lib/pkgconfig $(PKG_CONFIG) --cflags libsodium 2>/dev/null)
+SODIUM_LIBS ?= $(shell $(PKG_CONFIG) --libs libsodium 2>/dev/null || \
+		PKG_CONFIG_PATH=$$(brew --prefix libsodium)/lib/pkgconfig $(PKG_CONFIG) --libs libsodium 2>/dev/null)
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L -Iinclude -Ithird_party $(CURL_CFLAGS) $(SODIUM_CFLAGS)
 LDLIBS += $(CURL_LIBS) $(SODIUM_LIBS)
 CFLAGS ?= -O2 -g
@@ -47,7 +57,7 @@ verify-vendor:
 	test -s third_party/toml.h
 
 verify-libsodium:
-	@$(PKG_CONFIG) --exists libsodium || { echo "error: libsodium development files not found" >&2; exit 1; }
+	@ldconfig -p | grep -q libsodium.so || { echo "error: libsodium library not found" >&2; exit 1; }
 
 DIST_ARCHIVE := navi8or-source.tar.gz
 

@@ -107,12 +107,16 @@ int nav_platform_launch_editor(const NavEditorConfig *config, const char *path,
         }
     }
     for (size_t i = 0; i < config->argument_count + 1; i++)
-        free(arguments[i]);
+        if (arguments[i]) {
+            free(arguments[i]);
+        }
     free(arguments);
     return 0;
 fail:
     for (size_t i = 0; i < config->argument_count + 1; i++)
-        free(arguments[i]);
+        if (arguments[i]) {
+            free(arguments[i]);
+        }
     free(arguments);
     return -1;
 }
