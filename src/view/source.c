@@ -9,9 +9,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-typedef struct { off_t offset; size_t length; } LocalLine;
+typedef struct { int64_t offset; size_t length; } LocalLine;
 typedef struct {
     FILE *file;
+    char *temporary;
     LocalLine *lines;
     size_t count,capacity;
     char *cache;
@@ -54,17 +55,17 @@ static const char *local_line(NavViewSource *source,size_t line,size_t *length){
         if(!grown)return NULL;
         local->cache=grown;local->cache_capacity=wanted+1;
     }
-    if(fseeko(local->file,local->lines[line].offset,SEEK_SET)!=0||
+    if(nav_platform_seek(local->file,local->lines[line].offset,SEEK_SET)!=0||
        fread(local->cache,1,wanted,local->file)!=wanted)return NULL;
     local->cache[wanted]=0;
     if(length)*length=wanted;
     return local->cache;
 }
 static void local_close(NavViewSource *source){
-    if(source){LocalSource *local=source->implementation;if(local){if(local->file)fclose(local->file);free(local->lines);free(local->cache);free(local);}free(source);}
+    if(source){LocalSource *local=source->implementation;if(local){if(local->file)fclose(local->file);if(local->temporary){nav_platform_unlink(local->temporary);free(local->temporary);}free(local->lines);free(local->cache);free(local);}free(source);}
 }
 
-static int append_line(LocalSource *local,off_t offset,size_t length){
+static int append_line(LocalSource *local,int64_t offset,size_t length){
     if(local->count==local->capacity){
         size_t capacity=local->capacity?local->capacity*2:1024;
         LocalLine *grown=realloc(local->lines,capacity*sizeof *grown);
@@ -406,11 +407,11 @@ NavViewSource *nav_view_source_open_local(const char *path,bool *binary,
     bool is_binary=false;
     if(binary)*binary=false;
     if(!source||!local)goto memory_error;
-    local->file=fopen(path,"rb");
+    local->file=nav_platform_fopen(path,"rb");
     if(!local->file){snprintf(error,error_size,"cannot open: %s",strerror(errno));goto fail;}
     while(1){
-        off_t offset=ftello(local->file);
-        length=getline(&line,&line_capacity,local->file);
+        int64_t offset=nav_platform_tell(local->file);
+        length=nav_platform_getline(&line,&line_capacity,local->file);
         if(length<0)break;
         for(ssize_t i=0;i<length&&probed<4096;i++,probed++){
             unsigned char ch=(unsigned char)line[i];
@@ -438,7 +439,7 @@ memory_error:
     snprintf(error,error_size,"out of memory");
 fail:
     free(line);
-    if(local){if(local->file)fclose(local->file);free(local->lines);free(local->cache);free(local);}
+    if(local){if(local->file)fclose(local->file);if(local->temporary){nav_platform_unlink(local->temporary);free(local->temporary);}free(local->lines);free(local->cache);free(local);}
     free(source);
     return NULL;
 }
@@ -446,7 +447,7 @@ fail:
 NavViewSource *nav_view_source_open_provider(NavProvider *provider, const char *resource_id,
                                              bool *binary, char *error, size_t error_size)
 {
-    char temporary[] = "/tmp/nav-view-source-XXXXXX";
+    char temporary[NAV_PATH_MAX];
     unsigned char buffer[65536];
     void *handle = NULL;
     int descriptor;
@@ -457,18 +458,26 @@ NavViewSource *nav_view_source_open_provider(NavProvider *provider, const char *
     if ((provider->capabilities & NAV_CAP_RANDOM_READ) && provider->read_at)
         return open_remote_source(provider, resource_id, binary, error, error_size);
     if (provider->open_read(provider, resource_id, &handle, error, error_size)) return NULL;
-    descriptor = mkstemp(temporary);
+    descriptor = nav_platform_tempfile(temporary, sizeof temporary);
     if (descriptor < 0) { provider->close(provider, handle, error, error_size); snprintf(error, error_size, "cannot create viewer cache"); return NULL; }
     file = fdopen(descriptor, "wb");
-    if (!file) { close(descriptor); unlink(temporary); provider->close(provider, handle, error, error_size); snprintf(error, error_size, "cannot create viewer cache"); return NULL; }
+    if (!file) { close(descriptor); nav_platform_unlink(temporary); provider->close(provider, handle, error, error_size); snprintf(error, error_size, "cannot create viewer cache"); return NULL; }
     for (;;) {
         size_t got = 0;
         if (provider->read(provider, handle, buffer, sizeof buffer, &got, error, error_size) ||
-            (got && fwrite(buffer, 1, got, file) != got)) { fclose(file); unlink(temporary); provider->close(provider, handle, error, error_size); if (!error[0]) snprintf(error, error_size, "cannot cache viewer resource"); return NULL; }
+            (got && fwrite(buffer, 1, got, file) != got)) { fclose(file); nav_platform_unlink(temporary); provider->close(provider, handle, error, error_size); if (!error[0]) snprintf(error, error_size, "cannot cache viewer resource"); return NULL; }
         if (!got) break;
     }
-    if (provider->close(provider, handle, error, error_size) || fclose(file)) { unlink(temporary); if (!error[0]) snprintf(error, error_size, "cannot close viewer resource"); return NULL; }
+    if (provider->close(provider, handle, error, error_size) || fclose(file)) { nav_platform_unlink(temporary); if (!error[0]) snprintf(error, error_size, "cannot close viewer resource"); return NULL; }
     NavViewSource *source = nav_view_source_open_local(temporary, binary, error, error_size);
-    unlink(temporary);
+    if (source) {
+        LocalSource *local = source->implementation;
+        local->temporary = strdup(temporary);
+        if (!local->temporary) {
+            source->close(source); source = NULL;
+            snprintf(error, error_size, "out of memory");
+        }
+    }
+    if (!source) nav_platform_unlink(temporary);
     return source;
 }

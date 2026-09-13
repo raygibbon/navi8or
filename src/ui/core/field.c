@@ -19,26 +19,26 @@ void nav_ui_field_ensure_visible(NavUiField *field,size_t width){
     if(field->offset>field->length)field->offset=field->length;
 }
 
-NavUiFieldResult nav_ui_field_event(NavUiField *field,const NavTermEvent *event){
+NavUiFieldResult nav_ui_field_event(NavUiField *field,const NavAction *event){
     if(!field||!event||event->type!=NAV_TERM_EVENT_KEY)return NAV_UI_FIELD_IGNORED;
-    switch(event->key){
-        case NAV_KEY_ESCAPE:return NAV_UI_FIELD_CANCELLED;
-        case NAV_KEY_ENTER:return NAV_UI_FIELD_ACCEPTED;
-        case NAV_KEY_HOME:field->cursor=0;return NAV_UI_FIELD_MOVED;
-        case NAV_KEY_END:field->cursor=field->length;return NAV_UI_FIELD_MOVED;
-        case NAV_KEY_LEFT:
+    switch(event->command){
+        case NAV_CMD_CANCEL:return NAV_UI_FIELD_CANCELLED;
+        case NAV_CMD_ACCEPT:return NAV_UI_FIELD_ACCEPTED;
+        case NAV_CMD_HOME:field->cursor=0;return NAV_UI_FIELD_MOVED;
+        case NAV_CMD_END:field->cursor=field->length;return NAV_UI_FIELD_MOVED;
+        case NAV_CMD_LEFT:
             if(field->cursor){field->cursor--;return NAV_UI_FIELD_MOVED;}
             return NAV_UI_FIELD_IGNORED;
-        case NAV_KEY_RIGHT:
+        case NAV_CMD_RIGHT:
             if(field->cursor<field->length){field->cursor++;return NAV_UI_FIELD_MOVED;}
             return NAV_UI_FIELD_IGNORED;
-        case NAV_KEY_BACKSPACE:
+        case NAV_CMD_BACKSPACE:
             if(!field->cursor)return NAV_UI_FIELD_IGNORED;
             memmove(field->buffer+field->cursor-1,field->buffer+field->cursor,
                     field->length-field->cursor+1);
             field->cursor--;field->length--;
             return NAV_UI_FIELD_CHANGED;
-        case NAV_KEY_DELETE:
+        case NAV_CMD_TEXT_DELETE:
             if(field->cursor>=field->length)return NAV_UI_FIELD_IGNORED;
             memmove(field->buffer+field->cursor,field->buffer+field->cursor+1,
                     field->length-field->cursor);
@@ -46,11 +46,11 @@ NavUiFieldResult nav_ui_field_event(NavUiField *field,const NavTermEvent *event)
             return NAV_UI_FIELD_CHANGED;
         default:break;
     }
-    if(event->modifiers||(event->key<32||event->key>=127)||
+    if(event->command != NAV_CMD_TEXT||(event->text<32||event->text>=127)||
        field->length+1>=field->capacity)return NAV_UI_FIELD_IGNORED;
     memmove(field->buffer+field->cursor+1,field->buffer+field->cursor,
             field->length-field->cursor+1);
-    field->buffer[field->cursor++]=(char)event->key;
+    field->buffer[field->cursor++]=(char)event->text;
     field->length++;
     return NAV_UI_FIELD_CHANGED;
 }

@@ -16,43 +16,28 @@ typedef struct
     bool highlight_current;
 } ViewerScreen;
 
-enum
-{
-    VIEWER_MENU_PROPERTIES = 1,
-    VIEWER_MENU_CLOSE,
-    VIEWER_MENU_LINES,
-    VIEWER_MENU_WRAP,
-    VIEWER_MENU_TOP,
-    VIEWER_MENU_BOTTOM,
-    VIEWER_MENU_FIND,
-    VIEWER_MENU_NEXT,
-    VIEWER_MENU_PREVIOUS,
-    VIEWER_MENU_GOTO,
-    VIEWER_MENU_KEYS
-};
-
-#define VIEW_ITEM(label, command, key, binding) {label, command, NULL, false, false, key, binding}
-#define VIEW_SEPARATOR {NULL, 0, NULL, true, true, 0, NULL}
+#define VIEW_ITEM(label, command, key) {label, command, NULL, false, false, key}
+#define VIEW_SEPARATOR {NULL, 0, NULL, true, true, 0}
 static const NavUiMenuItem viewer_file_items[] = {
-    VIEW_ITEM("Properties", VIEWER_MENU_PROPERTIES, 'p', NULL),
-    VIEW_ITEM("Close Viewer", VIEWER_MENU_CLOSE, 'c', "Esc")};
+    VIEW_ITEM("Properties", NAV_CMD_PROPERTIES, 'p'),
+    VIEW_ITEM("Close Viewer", NAV_CMD_VIEWER_CLOSE, 'c')};
 static const NavUiMenuItem viewer_view_items[] = {
-    VIEW_ITEM("Line Numbers", VIEWER_MENU_LINES, 'l', "L"),
-    VIEW_ITEM("Wrap", VIEWER_MENU_WRAP, 'w', "W"),
+    VIEW_ITEM("Line Numbers", NAV_CMD_LINES, 'l'),
+    VIEW_ITEM("Wrap", NAV_CMD_WRAP, 'w'),
     VIEW_SEPARATOR,
-    VIEW_ITEM("Go to Top", VIEWER_MENU_TOP, 't', "Home"),
-    VIEW_ITEM("Go to Bottom", VIEWER_MENU_BOTTOM, 'b', "End")};
+    VIEW_ITEM("Go to Top", NAV_CMD_HOME, 't'),
+    VIEW_ITEM("Go to Bottom", NAV_CMD_END, 'b')};
 static const NavUiMenuItem viewer_search_items[] = {
-    VIEW_ITEM("Find", VIEWER_MENU_FIND, 'f', "/"),
-    VIEW_ITEM("Find Next", VIEWER_MENU_NEXT, 'n', "F5"),
-    VIEW_ITEM("Find Previous", VIEWER_MENU_PREVIOUS, 'p', "F6"),
-    VIEW_ITEM("Go To Line", VIEWER_MENU_GOTO, 'g', "G")};
+    VIEW_ITEM("Find", NAV_CMD_FIND, 'f'),
+    VIEW_ITEM("Find Next", NAV_CMD_FIND_NEXT, 'n'),
+    VIEW_ITEM("Find Previous", NAV_CMD_FIND_PREVIOUS, 'p'),
+    VIEW_ITEM("Go To Line", NAV_CMD_GOTO, 'g')};
 static const NavUiMenuItem viewer_options_items[] = {
-    {"Viewer Settings", 0, NULL, true, false, 'v', NULL},
-    {"Theme", 0, NULL, true, false, 't', NULL}};
+    {"Viewer Settings", 0, NULL, true, false, 'v'},
+    {"Theme", 0, NULL, true, false, 't'}};
 static const NavUiMenuItem viewer_help_items[] = {
-    VIEW_ITEM("Viewer Keys", VIEWER_MENU_KEYS, 'k', "F1"),
-    {"About Navi8or", 0, NULL, true, false, 'a', NULL}};
+    VIEW_ITEM("Viewer Keys", NAV_CMD_HELP, 'k'),
+    {"About Navi8or", 0, NULL, true, false, 'a'}};
 static NavUiMenu viewer_menus[] = {
     {"File", viewer_file_items, sizeof viewer_file_items / sizeof *viewer_file_items, 0},
     {"View", viewer_view_items, sizeof viewer_view_items / sizeof *viewer_view_items, 0},
@@ -63,7 +48,9 @@ static NavUiMenu viewer_menus[] = {
 static size_t viewer_page(void)
 {
     int height = nav_term_height();
-    return height > 2 ? (size_t)height - 2 : 1;
+    NavShellLayout layout = nav_shell_layout(nav_term_width(), height);
+    int rows = layout.workspace_bottom - layout.workspace_top;
+    return rows > 0 ? (size_t)rows : 1;
 }
 
 static size_t line_span(NavViewer *viewer, size_t line, size_t width)
@@ -134,6 +121,7 @@ static void draw_viewer(void *data)
     bool cursor_mode = viewer->source->cursor_line != NULL;
     size_t count = cursor_mode ? 0 : viewer->source->line_count(viewer->source);
     int width = nav_term_width(), height = nav_term_height();
+    NavShellLayout layout = nav_shell_layout(width, height);
     nav_term_clear(NAV_STYLE_BACKGROUND);
     if (width < 20 || height < 8)
     {
@@ -141,6 +129,7 @@ static void draw_viewer(void *data)
         nav_term_hide_cursor();
         return;
     }
+    nav_ui_draw_menu_bar(viewer_menus, sizeof viewer_menus / sizeof *viewer_menus);
     size_t gutter = nav_viewer_line_number_width(viewer), page = viewer_page();
     if (cursor_mode && viewer->line_numbers) {
         prepare_remote_gutter(viewer, page);
@@ -170,13 +159,13 @@ static void draw_viewer(void *data)
                           viewer->wrap ? "wrap" : "no-wrap");
         } else snprintf(metadata, sizeof metadata, "%zu lines %s", count,
                         viewer->wrap ? "wrap" : "no-wrap");
-        nav_ui_window_header(0, width, 1, 'V', title, metadata, true);
+        nav_ui_window_header(0, layout.workspace_top, width, 1, 'V', title, metadata, true);
     }
-    int row = 1;
+    int row = layout.workspace_top + 1;
     char status[512];
     if (cursor_mode) {
         NavViewCursor cursor = viewer->top_cursor;
-        while (row < height - 1) {
+        while (row <= layout.workspace_bottom) {
             size_t length = 0;
             const char *line = viewer->source->cursor_line(viewer->source,
                                                             &cursor, &length);
@@ -193,7 +182,7 @@ static void draw_viewer(void *data)
             size_t segments = viewer->wrap && text_width > 0 ?
                               (length ? (length + (size_t)text_width - 1) /
                                         (size_t)text_width : 1) : 1;
-            for (size_t segment = 0; segment < segments && row < height - 1;
+            for (size_t segment = 0; segment < segments && row <= layout.workspace_bottom;
                  segment++, row++) {
                 NavStyle style = screen->highlight_current && current ?
                                  NAV_STYLE_ACCENT : NAV_STYLE_TEXT;
@@ -242,12 +231,12 @@ static void draw_viewer(void *data)
         }
     } else {
         size_t logical = viewer->top_line;
-        while (logical < count && row < height - 1) {
+        while (logical < count && row <= layout.workspace_bottom) {
             size_t length = 0;
             const char *line = viewer->source->line(viewer->source, logical, &length);
             if (!line) line = "";
             size_t segments = viewer->wrap ? line_span(viewer, logical, (size_t)text_width) : 1;
-            for (size_t segment = 0; segment < segments && row < height - 1; segment++, row++) {
+            for (size_t segment = 0; segment < segments && row <= layout.workspace_bottom; segment++, row++) {
                 NavStyle style = screen->highlight_current && viewer->current_line == logical ? NAV_STYLE_ACCENT : NAV_STYLE_TEXT;
                 if (gutter) {
                     char number[32] = {0}, digits[24]; size_t digit_count;
@@ -271,7 +260,8 @@ static void draw_viewer(void *data)
                  shown, count, viewer->horizontal_offset + 1, percent,
                  viewer->status[0] ? "  " : "", viewer->status);
     }
-    nav_ui_mode_line(status);
+    nav_ui_text(0, layout.status_row, width, status, NAV_STYLE_STATUS);
+    nav_ui_command_bar(layout.command_row, width, NAV_CONTEXT_VIEWER, NULL, NULL);
     nav_term_hide_cursor();
 }
 
@@ -309,19 +299,9 @@ static void goto_prompt(ViewerScreen *screen)
 }
 
 static void viewer_help(void)
-{
-    static const char *lines[] = {
-        "Viewer Keys", "",
-        "Up/Down       Move line", "PgUp/PgDn     Scroll page",
-        "Home/End      Top/bottom", "Left/Right    Horizontal scroll",
-        "Ctrl+Left/Right  Scroll by eight columns",
-        "/             Find", "F5/F6         Find next/previous",
-        "g             Go to line", "w             Toggle wrap",
-        "l             Toggle line numbers", "Ctrl+\\        Viewer menu",
-        "Esc           Close viewer"};
-    nav_ui_info(" Viewer Help ", lines, sizeof lines / sizeof *lines);
-}
+{ nav_ui_binding_help(NAV_CONTEXT_VIEWER); }
 
+static bool viewer_dispatch(ViewerScreen *, NavCommand);
 static bool viewer_menu(ViewerScreen *screen)
 {
     static int saved_major;
@@ -331,43 +311,62 @@ static bool viewer_menu(ViewerScreen *screen)
         for (size_t index = 0; index < sizeof viewer_menus / sizeof *viewer_menus; index++)
             viewer_menus[index].current = 0;
     }
-    int command = nav_ui_pull_down(viewer_menus, sizeof viewer_menus / sizeof *viewer_menus,
+    NavCommand command = nav_ui_pull_down(viewer_menus, sizeof viewer_menus / sizeof *viewer_menus,
                                   &saved_major, draw_viewer, screen);
+    return viewer_dispatch(screen, command);
+}
+
+static bool viewer_dispatch(ViewerScreen *screen, NavCommand command)
+{
     size_t page = viewer_page();
     bool wrapped = false;
     switch (command)
     {
-    case VIEWER_MENU_PROPERTIES:
+    case NAV_CMD_QUIT: nav_ui_request_quit(); return true;
+    case NAV_CMD_MENU: return viewer_menu(screen);
+    case NAV_CMD_UP: nav_viewer_move(&screen->viewer, -1, page); break;
+    case NAV_CMD_DOWN: nav_viewer_move(&screen->viewer, 1, page); break;
+    case NAV_CMD_PAGE_UP: nav_viewer_page(&screen->viewer, -1, page); break;
+    case NAV_CMD_PAGE_DOWN: nav_viewer_page(&screen->viewer, 1, page); break;
+    case NAV_CMD_LEFT:
+    case NAV_CMD_LEFT_FAST:
+        if (!screen->viewer.wrap) nav_viewer_horizontal(&screen->viewer, command == NAV_CMD_LEFT ? -1 : -8);
+        break;
+    case NAV_CMD_RIGHT:
+    case NAV_CMD_RIGHT_FAST:
+        if (!screen->viewer.wrap) nav_viewer_horizontal(&screen->viewer, command == NAV_CMD_RIGHT ? 1 : 8);
+        break;
+    case NAV_CMD_PROPERTIES:
         nav_show_properties(screen->entry, "Type:      Text");
         break;
-    case VIEWER_MENU_CLOSE:
+    case NAV_CMD_VIEWER_CLOSE:
         return true;
-    case VIEWER_MENU_LINES:
+    case NAV_CMD_LINES:
         screen->viewer.line_numbers = !screen->viewer.line_numbers;
         break;
-    case VIEWER_MENU_WRAP:
+    case NAV_CMD_WRAP:
         screen->viewer.wrap = !screen->viewer.wrap;
         screen->viewer.horizontal_offset = 0;
         break;
-    case VIEWER_MENU_TOP:
+    case NAV_CMD_HOME:
         nav_viewer_top(&screen->viewer);
         break;
-    case VIEWER_MENU_BOTTOM:
+    case NAV_CMD_END:
         nav_viewer_bottom(&screen->viewer, page);
         break;
-    case VIEWER_MENU_FIND:
+    case NAV_CMD_FIND:
         find_prompt(screen);
         break;
-    case VIEWER_MENU_NEXT:
+    case NAV_CMD_FIND_NEXT:
         nav_viewer_find(&screen->viewer, 1, page, &wrapped);
         break;
-    case VIEWER_MENU_PREVIOUS:
+    case NAV_CMD_FIND_PREVIOUS:
         nav_viewer_find(&screen->viewer, -1, page, &wrapped);
         break;
-    case VIEWER_MENU_GOTO:
+    case NAV_CMD_GOTO:
         goto_prompt(screen);
         break;
-    case VIEWER_MENU_KEYS:
+    case NAV_CMD_HELP:
         viewer_help();
         break;
     default:
@@ -379,7 +378,7 @@ static bool viewer_menu(ViewerScreen *screen)
 int nav_view_file(NavProvider *provider, const NavEntry *entry, const NavConfig *config)
 {
     char error[256] = {0};
-    bool binary = false, wrapped = false;
+    bool binary = false;
     NavViewSource *source = nav_view_source_open_provider(provider, entry->resource_id, &binary, error, sizeof error);
     if (!source)
     {
@@ -412,62 +411,21 @@ int nav_view_file(NavProvider *provider, const NavEntry *entry, const NavConfig 
         screen.viewer.line_numbers = config->viewer_line_numbers;
         screen.viewer.wrap = config->viewer_wrap;
     }
+    NavInputContext previous = nav_ui_workspace(NAV_CONTEXT_VIEWER);
     for (;;)
     {
-        NavTermEvent event;
-        size_t page = viewer_page();
+        NavAction event;
         draw_viewer(&screen);
         nav_term_present();
-        if (nav_term_poll_event(&event, -1) <= 0)
+        if (nav_ui_input(NAV_CONTEXT_VIEWER, &event) <= 0)
             continue;
         if (event.type == NAV_TERM_EVENT_RESIZE)
             continue;
         if (event.type != NAV_TERM_EVENT_KEY)
             continue;
-        if (event.key == NAV_KEY_ESCAPE)
-            break;
-        if (event.key == '\\' && (event.modifiers & NAV_MOD_CTRL))
-        {
-            if (viewer_menu(&screen))
-                break;
-            continue;
-        }
-        if (event.key == NAV_KEY_UP && event.modifiers == 0)
-            nav_viewer_move(&screen.viewer, -1, page);
-        else if (event.key == NAV_KEY_DOWN && event.modifiers == 0)
-            nav_viewer_move(&screen.viewer, 1, page);
-        else if (event.key == NAV_KEY_PAGE_UP && event.modifiers == 0)
-            nav_viewer_page(&screen.viewer, -1, page);
-        else if (event.key == NAV_KEY_PAGE_DOWN && event.modifiers == 0)
-            nav_viewer_page(&screen.viewer, 1, page);
-        else if ((event.key == NAV_KEY_HOME && event.modifiers == 0) || (event.key == NAV_KEY_HOME && (event.modifiers & NAV_MOD_CTRL)))
-            nav_viewer_top(&screen.viewer);
-        else if ((event.key == NAV_KEY_END && event.modifiers == 0) || (event.key == NAV_KEY_END && (event.modifiers & NAV_MOD_CTRL)))
-            nav_viewer_bottom(&screen.viewer, page);
-        else if (!screen.viewer.wrap && event.key == NAV_KEY_LEFT)
-            nav_viewer_horizontal(&screen.viewer, event.modifiers & NAV_MOD_CTRL ? -8 : -1);
-        else if (!screen.viewer.wrap && event.key == NAV_KEY_RIGHT)
-            nav_viewer_horizontal(&screen.viewer, event.modifiers & NAV_MOD_CTRL ? 8 : 1);
-        else if (event.key == '/' && event.modifiers == 0)
-            find_prompt(&screen);
-        else if (event.key == NAV_KEY_F5)
-            nav_viewer_find(&screen.viewer, 1, page, &wrapped);
-        else if (event.key == NAV_KEY_F6)
-            nav_viewer_find(&screen.viewer, -1, page, &wrapped);
-        else if ((event.key == 'g' || event.key == 'G') && event.modifiers == 0)
-            goto_prompt(&screen);
-        else if ((event.key == 'w' || event.key == 'W') && event.modifiers == 0)
-        {
-            screen.viewer.wrap = !screen.viewer.wrap;
-            screen.viewer.horizontal_offset = 0;
-            snprintf(screen.viewer.status, sizeof screen.viewer.status, "Wrap %s", screen.viewer.wrap ? "on" : "off");
-        }
-        else if ((event.key == 'l' || event.key == 'L') && event.modifiers == 0)
-        {
-            screen.viewer.line_numbers = !screen.viewer.line_numbers;
-            snprintf(screen.viewer.status, sizeof screen.viewer.status, "Line numbers %s", screen.viewer.line_numbers ? "on" : "off");
-        }
+        if (viewer_dispatch(&screen, event.command)) break;
     }
+    nav_ui_workspace(previous);
     source->close(source);
     return 0;
 }

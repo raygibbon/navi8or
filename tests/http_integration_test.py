@@ -565,10 +565,10 @@ def run_nav_open(nav, url):
                 raise RuntimeError("Backspace did not return to repository root")
             root_requests = sum(request["path"] == "/root/"
                                 for request in DirectoryHandler.requests)
-            send(fd, b"\x12", 0.4)
+            send(fd, b"\x12r", 0.4)
             if sum(request["path"] == "/root/"
                    for request in DirectoryHandler.requests) <= root_requests:
-                raise RuntimeError("Ctrl+R did not refresh the HTTP pane")
+                raise RuntimeError("Ctrl+R R did not refresh the HTTP pane")
 
             send(fd, b"/")
             send(fd, b"large.txt")
@@ -771,7 +771,7 @@ def run_nav_upload(nav, url):
             if "uploaded through Commander F5" not in screen.text():
                 raise RuntimeError("uploaded file did not reopen through remote F3")
             send(fd, b"\x1b")
-            send(fd, b"\x12")
+            send(fd, b"\x12r")
             assert_keybar_state(screen, available=("F7", "F8"), disabled=("F4",))
             send(fd, b"\x15")
             assert_keybar_state(screen, available=("F4", "F7", "F8"))

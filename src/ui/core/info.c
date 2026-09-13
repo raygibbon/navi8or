@@ -23,7 +23,7 @@ void nav_ui_info(const char *title, const char *const *lines, size_t count)
     int saved_valid = 0;
     int base_invalid = 0;
     for (;;) {
-        NavTermEvent event;
+        NavAction event;
         int screen_width = nav_term_width(), screen_height = nav_term_height();
         int width = text_width(lines, count) + 4;
         int height = (int)count + 4;
@@ -67,7 +67,7 @@ void nav_ui_info(const char *title, const char *const *lines, size_t count)
             nav_ui_text(0, 0, screen_width, "Terminal too small", NAV_STYLE_MENU);
         nav_term_hide_cursor();
         nav_term_present();
-        if (nav_term_poll_event(&event, -1) <= 0)
+        if (nav_ui_input(NAV_CONTEXT_INFO, &event) <= 0)
             continue;
         if (event.type == NAV_TERM_EVENT_RESIZE) {
             nav_ui_free_area(&saved);
@@ -77,13 +77,13 @@ void nav_ui_info(const char *title, const char *const *lines, size_t count)
         }
         if (event.type != NAV_TERM_EVENT_KEY)
             continue;
-        if (event.key == NAV_KEY_ESCAPE) {
+        if (event.command == NAV_CMD_CANCEL) {
             if (saved_valid)
                 nav_ui_restore_area(&saved);
             nav_ui_free_area(&saved);
             nav_term_present();
             return;
         }
-        nav_ui_text_view_key(&view, event.key, count, (size_t)page);
+        nav_ui_text_view_command(&view, event.command, count, (size_t)page);
     }
 }

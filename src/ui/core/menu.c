@@ -70,7 +70,10 @@ static int make_menu(const NavUiMenu *menu, PreparedMenu *prepared)
     for (size_t index = 0; index < menu->minor_count; index++) {
         const NavUiMenuItem *item = &menu->minor[index];
         int length = item->line ? (int)strlen(item->line) : 0;
-        int key_length = item->key_name ? (int)strlen(item->key_name) : -2;
+        char binding[80];
+        int key_length = nav_keymap_label(nav_ui_keymap(), nav_ui_workspace_context(),
+                                          (NavCommand)item->command, binding, sizeof binding);
+        if (!key_length) key_length = -2;
         if (length > longest_name) longest_name = length;
         if (key_length > longest_key) longest_key = key_length;
         if (item->separator) prepared->separator_count++;
@@ -105,10 +108,12 @@ static int make_menu(const NavUiMenu *menu, PreparedMenu *prepared)
             if (amount > (size_t)(prepared->width - 7)) amount = (size_t)(prepared->width - 7);
             memcpy(line + 5, item->line, amount);
         }
-        if (item->key_name) {
-            int length = (int)strlen(item->key_name);
+        char binding[80];
+        int length = nav_keymap_label(nav_ui_keymap(), nav_ui_workspace_context(),
+                                      (NavCommand)item->command, binding, sizeof binding);
+        if (length > 0) {
             int start = prepared->width - 2 - length;
-            if (start >= 0) memcpy(line + start, item->key_name, (size_t)length);
+            if (start >= 0) memcpy(line + start, binding, (size_t)length);
         }
     }
     return 0;
@@ -207,8 +212,8 @@ int nav_ui_pull_down(NavUiMenu *menus, size_t count, int *saved_major,
         nav_term_hide_cursor();
         nav_term_present();
         for (;;) {
-            NavTermEvent event;
-            if (nav_term_poll_event(&event, -1) <= 0) continue;
+            NavAction event;
+            if (nav_ui_input(NAV_CONTEXT_MENU, &event) <= 0) continue;
             if (event.type == NAV_TERM_EVENT_RESIZE) {
                 menu->current = selected; *saved_major = (int)major;
                 nav_ui_free_area(&saved); free_menu(&prepared, menu->minor_count);
@@ -217,7 +222,7 @@ int nav_ui_pull_down(NavUiMenu *menus, size_t count, int *saved_major,
                 return NAV_UI_MENU_RESIZED;
             }
             if (event.type != NAV_TERM_EVENT_KEY) continue;
-            if (event.key == NAV_KEY_ESCAPE) {
+            if (event.command == NAV_CMD_CANCEL) {
                 menu->current = selected; *saved_major = (int)major;
                 nav_ui_restore_area(&saved); nav_ui_free_area(&saved);
                 free_menu(&prepared, menu->minor_count);
@@ -226,24 +231,36 @@ int nav_ui_pull_down(NavUiMenu *menus, size_t count, int *saved_major,
                 return NAV_UI_MENU_CANCELLED;
             }
             int motion = nav_ui_menu_major_motion(&event);
-            if (motion || (event.modifiers == 0 && event.key >= '1' && event.key <= '9')) {
+            if (motion || (event.command == NAV_CMD_TEXT && event.text >= '1' && event.text <= '9')) {
                 menu->current = selected;
                 nav_ui_restore_area(&saved); nav_ui_free_area(&saved);
                 free_menu(&prepared, menu->minor_count);
                 if (motion) major = nav_ui_menu_move_major(major, count, motion);
-                else if ((size_t)(event.key - '1') < count) major = (size_t)(event.key - '1');
+                else if ((size_t)(event.text - '1') < count) major = (size_t)(event.text - '1');
                 break;
             }
-            if ((event.key == NAV_KEY_DOWN || event.key == NAV_KEY_UP) && event.modifiers == 0) {
+            if ((event.command == NAV_CMD_DOWN || event.command == NAV_CMD_UP)) {
                 size_t old = selected;
                 selected = nav_ui_menu_move_minor(menu, selected,
-                                                  event.key == NAV_KEY_DOWN ? 1 : -1);
+                                                  event.command == NAV_CMD_DOWN ? 1 : -1);
                 draw_item(menu, &prepared, column, row, old, selected);
                 draw_item(menu, &prepared, column, row, selected, selected);
                 menu->current = selected; nav_term_present();
                 continue;
             }
-            if (event.key == NAV_KEY_ENTER && event.modifiers == 0 && selected < menu->minor_count) {
+            /* A configured modal shortcut selects the same menu action. */
+            if (event.command != NAV_CMD_NONE && event.command != NAV_CMD_TEXT &&
+                event.command != NAV_CMD_ACCEPT) {
+                for (size_t item = 0; item < menu->minor_count; item++) {
+                    if (menu->minor[item].command == (int)event.command &&
+                        nav_ui_menu_activate(menu, item) != NAV_UI_MENU_CANCELLED) {
+                        selected = item;
+                        event.command = NAV_CMD_ACCEPT;
+                        break;
+                    }
+                }
+            }
+            if (event.command == NAV_CMD_ACCEPT && selected < menu->minor_count) {
                 int command = nav_ui_menu_activate(menu, selected);
                 if (command == NAV_UI_MENU_CANCELLED) continue;
                 menu->current = selected; *saved_major = (int)major;
@@ -253,9 +270,9 @@ int nav_ui_pull_down(NavUiMenu *menus, size_t count, int *saved_major,
                 nav_term_present();
                 return command;
             }
-            if (event.modifiers == 0) {
+            if (event.command == NAV_CMD_TEXT) {
                 size_t accelerated = selected;
-                int command = nav_ui_menu_accelerator(menu, event.key, &accelerated);
+                int command = nav_ui_menu_accelerator(menu, (int)event.text, &accelerated);
                 if (command != NAV_UI_MENU_CANCELLED) {
                     menu->current = accelerated; *saved_major = (int)major;
                     nav_ui_restore_area(&saved); nav_ui_free_area(&saved);

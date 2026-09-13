@@ -62,7 +62,7 @@ static int local_list(NavProvider *provider, const char *path, bool hidden, NavL
     free(wide);
     if (search == INVALID_HANDLE_VALUE) { snprintf(error, size, "cannot enumerate local directory"); return -1; }
     memset(&entry, 0, sizeof entry); strcpy(entry.name, "..");
-    snprintf(entry.resource_id, sizeof entry->resource_id, "%s", path);
+    snprintf(entry.resource_id, sizeof entry.resource_id, "%s", path);
     entry.flags = NAV_ENTRY_DIR | NAV_ENTRY_PARENT;
     if (append(out, &entry)) goto fail;
     do {
@@ -86,5 +86,5 @@ static int local_open_read(NavProvider*p,const char*path,void**handle,char*e,siz
 static int local_open_write(NavProvider*p,const char*path,bool overwrite,uint64_t total,bool total_known,void**handle,char*e,size_t n){int flags=O_WRONLY|O_CREAT|(overwrite?O_TRUNC:O_EXCL);int fd;(void)p;(void)total;(void)total_known;wchar_t *wide=nav_windows_wide(path);fd=wide?_wopen(wide,flags|_O_BINARY,_S_IREAD|_S_IWRITE):-1;free(wide);if(fd<0){snprintf(e,n,"cannot create destination: %s",strerror(errno));return -1;}*handle=fdopen(fd,"wb");if(!*handle){snprintf(e,n,"cannot create destination: %s",strerror(errno));_close(fd);return -1;}return 0;}
 static int local_read(NavProvider*p,void*h,void*b,size_t cap,size_t*got,char*e,size_t n){(void)p;*got=fread(b,1,cap,(FILE*)h);if(*got==0&&ferror((FILE*)h)){snprintf(e,n,"read failure: %s",strerror(errno));return -1;}return 0;}
 static int local_write(NavProvider*p,void*h,const void*b,size_t len,char*e,size_t n){(void)p;if(fwrite(b,1,len,(FILE*)h)!=len){snprintf(e,n,"write failure: %s",strerror(errno));return -1;}return 0;}
-static int local_close(NavProvider*p,void*h,char*e,size_t n){(void)p;if(_close(_fileno((FILE*)h))){snprintf(e,n,"close failure: %s",strerror(errno));return -1;}return 0;}
+static int local_close(NavProvider*p,void*h,char*e,size_t n){(void)p;if(fclose((FILE *)h)){snprintf(e,n,"close failure: %s",strerror(errno));return -1;}return 0;}
 NavProvider *nav_local_provider(void) { static NavProvider p={.scheme="local",.capabilities=NAV_CAP_LIST|NAV_CAP_READ|NAV_CAP_WRITE|NAV_CAP_DELETE|NAV_CAP_MKDIR|NAV_CAP_RENAME|NAV_CAP_STAT|NAV_CAP_EDIT_LOCAL,.location=local_location,.location_child=local_child,.location_parent=local_parent,.list=local_list,.rename_path=local_move,.remove=local_remove,.mkdir=local_mkdir,.stat=local_stat,.open_read=local_open_read,.open_write=local_open_write,.read=local_read,.write=local_write,.close=local_close};return &p; }

@@ -522,7 +522,7 @@ Writable PUT: On
 MkDir:        On
 Delete:       On
 Rename:       On
-Credential:   (blank)
+Credential:   <none>
 ```
 
 ### Basic-auth repository
@@ -568,9 +568,18 @@ The corresponding credential record should contain:
 Token: navi8or-test-token-12345
 ```
 
-Create the named Basic and Bearer records first through **Repositories →
-Credential Vault**, then enter the record name in the repository's Credential
-field. Navi8or infers the authentication type from the Vault record.
+Use **Repositories → Add Repository**, enter Name and URL, then choose
+**Credential**. For port 8443 select **<none>**. For 8444 select `local-basic`
+(Basic, username `navi8or`); for 8445 select `local-bearer` (Bearer).
+If the record does not exist, choose **+ Add credential...**. Navi8or creates
+an encrypted Vault with a confirmed master password, or unlocks an existing
+Vault, then lets you choose Basic/Bearer and enter the fields shown above.
+Passwords and tokens require masked confirmation. The new credential is selected
+automatically. **Unlock Vault...** lists existing records when the Vault is locked.
+Esc returns to the previous layer and keeps the repository fields and selection.
+The Vault master password unlocks local storage; the credential password/token
+authenticates to the server. Only the selected name is saved in repository config;
+the credential type determines the authentication method.
 
 ## 14. Authentication must apply to every HTTP operation
 

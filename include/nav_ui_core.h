@@ -37,7 +37,7 @@ void nav_ui_s_output(const char *, int, int, NavStyle,
 char *nav_ui_create_frame_rows(int, int, const int *, size_t);
 void nav_ui_frame(int x, int y, int width, int height, const int *, size_t,
                  const char *title, NavStyle style);
-void nav_ui_window_header(int, int, int, char, const char *, const char *, bool);
+void nav_ui_window_header(int, int, int, int, char, const char *, const char *, bool);
 void nav_ui_vertical_separator(int, int, int);
 void nav_ui_mode_line(const char *);
 
@@ -59,7 +59,6 @@ typedef struct
     bool disabled;
     bool separator;
     char accelerator;
-    const char *key_name;
 } NavUiMenuItem;
 
 struct NavUiMenu
@@ -83,7 +82,7 @@ enum
 };
 size_t nav_ui_menu_move_minor(const NavUiMenu *, size_t, int);
 size_t nav_ui_menu_move_major(size_t, size_t, int);
-int nav_ui_menu_major_motion(const NavTermEvent *);
+int nav_ui_menu_major_motion(const NavAction *);
 int nav_ui_menu_accelerator(const NavUiMenu *, int, size_t *);
 int nav_ui_menu_activate(const NavUiMenu *, size_t);
 int nav_ui_pull_down(NavUiMenu *, size_t, int *, NavUiRedrawFn, void *);
@@ -112,7 +111,7 @@ typedef enum
 
 void nav_ui_field_init(NavUiField *, char *, size_t);
 void nav_ui_field_ensure_visible(NavUiField *, size_t);
-NavUiFieldResult nav_ui_field_event(NavUiField *, const NavTermEvent *);
+NavUiFieldResult nav_ui_field_event(NavUiField *, const NavAction *);
 int nav_ui_prompt_text(const char *, const char *, char *, size_t,
                        NavUiRedrawFn, void *);
 bool nav_ui_confirm(const char *, NavUiRedrawFn, void *);
@@ -122,7 +121,7 @@ typedef struct
     size_t top;
 } NavUiTextView;
 void nav_ui_text_view_clamp(NavUiTextView *, size_t, size_t);
-void nav_ui_text_view_key(NavUiTextView *, int, size_t, size_t);
+void nav_ui_text_view_command(NavUiTextView *, NavCommand, size_t, size_t);
 void nav_ui_info(const char *, const char *const *, size_t);
 
 #endif

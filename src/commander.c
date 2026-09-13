@@ -3,41 +3,6 @@
 #include <string.h>
 #include <strings.h>
 
-bool nav_commander_layout_for_style(int width, int height, NavUiStyle style,
-                                    NavCommanderLayout *layout)
-{
-    if (!layout) return false;
-    memset(layout, 0, sizeof *layout);
-    layout->width = width;
-    layout->height = height;
-    layout->top_row = 0;
-    layout->menu_row = 0;
-    layout->pane_title_row = 1;
-    layout->pane_location_row = 2;
-    layout->pane_column_header_row = 3;
-    layout->pane_column_separator_row =
-        style == NAV_UI_STYLE_CLASSIC ? 4 : -1;
-    layout->body_top = style == NAV_UI_STYLE_CLASSIC ? 5 : 4;
-    layout->summary_row = height - 3;
-    layout->status_row = height - 2;
-    layout->key_bar_row = height - 1;
-    layout->body_height = layout->summary_row - layout->body_top;
-    layout->body_bottom = layout->summary_row - 1;
-    layout->divider = width / 2;
-    layout->pane_x[0] = 0;
-    layout->pane_width[0] = layout->divider;
-    layout->pane_x[1] = layout->divider + 1;
-    layout->pane_width[1] = width - layout->pane_x[1];
-    return width >= 20 && height >= 8 && layout->body_height >= 1 &&
-           layout->pane_width[0] > 0 && layout->pane_width[1] > 0;
-}
-
-bool nav_commander_layout(int width, int height, NavCommanderLayout *layout)
-{
-    return nav_commander_layout_for_style(width, height, NAV_UI_STYLE_MODERN,
-                                          layout);
-}
-
 bool nav_entry_has_known_size(const NavEntry *entry)
 {
     return entry && (entry->flags & NAV_ENTRY_SIZE_KNOWN) != 0;
@@ -62,31 +27,6 @@ void nav_provider_display_name(const NavProvider *provider, char *output,
 void nav_provider_destroy(NavProvider *provider)
 {
     if (provider && provider->destroy) provider->destroy(provider);
-}
-
-size_t nav_function_key_layout(int width, NavFunctionKeySegment *segments,
-                               size_t capacity)
-{
-    static const int keys[] = {1, 2, 3, 4, 5, 6, 7, 8, 10};
-    static const char *full[] = {"Help", "Menu", "View", "Edit", "Copy", "Move", "MkDir", "Delete", "Quit"};
-    static const char *shortened[] = {"H", "M", "V", "E", "C", "M", "D", "D", "Q"};
-    const size_t count = sizeof keys / sizeof *keys;
-    const char *const *labels = width >= 58 ? full : width >= 28 ? shortened : NULL;
-    int x = 0;
-    if (!segments || capacity < count || width < 19) return 0;
-    for (size_t index = 0; index < count; index++) {
-        int remaining = width - x;
-        int slots = (int)(count - index);
-        int segment_width = remaining / slots;
-        int key_width = keys[index] == 10 ? 3 : 2;
-        segments[index].key = keys[index];
-        segments[index].x = x;
-        segments[index].width = segment_width;
-        segments[index].key_width = key_width;
-        segments[index].label = labels ? labels[index] : "";
-        x += segment_width;
-    }
-    return count;
 }
 
 bool nav_provider_supports(const NavProvider *provider, unsigned capability)
@@ -363,7 +303,7 @@ void nav_format_entry_full(const NavEntry *entry, int width, char *output,
         int amount;
         if (entry->flags & NAV_ENTRY_MODIFIED_KNOWN) {
             struct tm value;
-            localtime_r(&entry->modified, &value);
+            nav_platform_localtime(&entry->modified, &value);
             strftime(modified, sizeof modified, "%Y-%m-%d %H:%M", &value);
         }
         amount = (int)strlen(modified);

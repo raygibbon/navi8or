@@ -57,3 +57,28 @@ OS-native CredentialStore backends such as Windows Credential Manager, macOS
 Keychain, and Linux Secret Service/KWallet may be added later by implementing
 the small internal store operations table, without changing providers or Vault
 crypto.
+
+## Repository credential selection
+
+Add/Edit Repository offers a scrolling, keyboard-driven Credential picker in both
+Modern and Classic styles. Up/Down moves, Enter selects, and Esc keeps the current
+reference. `<none>` removes only the reference, never the Vault record. Rows show
+metadata (name, type, Basic username), with no secret reveal or copy action.
+`+ Add credential...` creates/unlocks the Vault inline, offers the provider's
+supported types, and selects the newly saved record. `Unlock Vault...` makes
+existing records available. Cancel and failed unlock preserve repository fields;
+retry from the picker. Unrelated edits can retain a locked reference without unlock.
+Missing and unsupported current references stay visible and are preserved until
+explicitly changed; runtime access still reports credential errors.
+
+Repositories store only `credential = "name"` in `repositories.toml`, never
+passwords, tokens, or a second auth-method field. Names can be shared across
+repositories; editing a Vault secret updates subsequent operations for all users
+of that reference. Creating credentials leaves the Vault unlocked.
+
+The provider registry supplies `nav_provider_supports_credential_type` using a
+small provider-owned acceptance callback. HTTP accepts Basic/Bearer. The picker
+checks metadata without resolving secrets, while protocol authentication mapping
+remains in the HTTP provider. Future SFTP/SMB authentication can reuse this picker
+and reference model by supplying acceptance rules; this pass adds no protocols
+or credential types and changes no crypto or Vault format.

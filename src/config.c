@@ -11,7 +11,7 @@
 
 static int make_directory(const char *path, char *error, size_t error_size)
 {
-    if (mkdir(path, 0700) == 0 || errno == EEXIST)
+    if (nav_platform_mkdir(path, 0700) == 0 || errno == EEXIST)
         return 0;
     snprintf(error, error_size, "cannot create %s: %s", path, strerror(errno));
     return -1;
@@ -19,7 +19,7 @@ static int make_directory(const char *path, char *error, size_t error_size)
 
 static int write_file(const char *path, const char *contents, char *error, size_t error_size)
 {
-    FILE *file = fopen(path, "w");
+    FILE *file = nav_platform_fopen(path, "w");
     if (!file)
     {
         snprintf(error, error_size, "cannot write %s: %s", path, strerror(errno));
@@ -98,6 +98,7 @@ static void config_warning(NavConfig *config, const char *message)
 void nav_config_defaults(NavConfig *config)
 {
     memset(config, 0, sizeof *config);
+    nav_keymap_defaults(&config->keymap);
     config->confirm_delete = true;
     config->confirm_overwrite = true;
     config->directories_first = true;
@@ -232,7 +233,7 @@ int nav_config_write_defaults(char *error, size_t error_size)
                  "%s/repositories.toml", directory) >= (int)sizeof repositories_path)
         return -1;
     {
-        FILE *repositories = fopen(repositories_path, "wx");
+        FILE *repositories = nav_platform_fopen(repositories_path, "wx");
         if (repositories) {
             if (fputs(repositories_text, repositories) == EOF || fclose(repositories) != 0) {
                 snprintf(error, error_size, "cannot write %s: %s",
@@ -262,6 +263,21 @@ static int write_toml_string(FILE *file, const char *value)
     return fputc('"', file) == EOF ? -1 : 0;
 }
 
+static int config_directory(const NavConfig *config, char *directory, size_t size)
+{
+    if (!config->explicit_config) return nav_platform_config_dir(directory, size);
+    if (strlen(config->config_path) >= size) return -1;
+    snprintf(directory, size, "%s", config->config_path);
+    char *slash = strrchr(directory, '/');
+#ifdef _WIN32
+    char *backslash = strrchr(directory, '\\');
+    if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
+    if (slash) slash[1] = 0;
+    else snprintf(directory, size, ".");
+    return 0;
+}
+
 int nav_config_save_repositories(const NavConfig *config, char *error,
                                  size_t error_size)
 {
@@ -269,14 +285,14 @@ int nav_config_save_repositories(const NavConfig *config, char *error,
     int descriptor;
     FILE *file;
     if (nav_config_validate(config, error, error_size)) return -1;
-    if (nav_platform_config_dir(directory, sizeof directory) ||
+    if (config_directory(config, directory, sizeof directory) ||
         snprintf(path, sizeof path, "%s/repositories.toml", directory) >= (int)sizeof path ||
         snprintf(temporary, sizeof temporary, "%s/.repositories.toml.XXXXXX", directory) >= (int)sizeof temporary) {
         snprintf(error, error_size, "configuration path is unavailable");
         return -1;
     }
     if (make_directory(directory, error, error_size)) return -1;
-    descriptor = mkstemp(temporary);
+    descriptor = nav_platform_mkstemp(temporary);
     if (descriptor < 0 || !(file = fdopen(descriptor, "w"))) {
         if (descriptor >= 0) close(descriptor);
         snprintf(error, error_size, "cannot create repository configuration: %s",
@@ -303,19 +319,19 @@ int nav_config_save_repositories(const NavConfig *config, char *error,
             goto write_failed;
     }
     bool failed = fflush(file) != 0;
-    if (!failed && fsync(descriptor)) failed = true;
+    if (!failed && nav_platform_sync(descriptor)) failed = true;
     if (fclose(file)) failed = true;
-    if (!failed && rename(temporary, path)) failed = true;
+    if (!failed && nav_platform_replace(temporary, path)) failed = true;
     if (failed) {
         snprintf(error, error_size, "cannot save repositories: %s", strerror(errno));
-        unlink(temporary);
+        nav_platform_unlink(temporary);
         return -1;
     }
     return 0;
 write_failed:
     snprintf(error, error_size, "cannot save repositories: %s", strerror(errno));
     fclose(file);
-    unlink(temporary);
+    nav_platform_unlink(temporary);
     return -1;
 }
 
@@ -404,7 +420,7 @@ static void load_repositories(NavConfig *config, const char *directory)
         config_warning(config, "repository configuration path is too long");
         return;
     }
-    file = fopen(path, "r");
+    file = nav_platform_fopen(path, "r");
     if (!file) {
         if (errno != ENOENT) {
             snprintf(warning, sizeof warning, "cannot read repositories.toml: %s",
@@ -499,21 +515,70 @@ static void load_repositories(NavConfig *config, const char *directory)
     toml_free(root);
 }
 
-int nav_config_load(NavConfig *config, char *error, size_t error_size)
+static int read_keymap(toml_table_t *root, NavKeymap *map, char *error, size_t size)
+{
+    toml_table_t *keys = toml_table_in(root, "keys");
+    if (!keys) {
+        if (toml_key_exists(root, "keys")) { snprintf(error, size, "keys must be a table"); return -1; }
+        return 0;
+    }
+    for (int i = 0; ; i++) {
+        const char *section = toml_key_in(keys, i);
+        if (!section) break;
+        NavInputContext context;
+        for (context = 0; context < NAV_CONTEXT_COUNT; context++)
+            if (!strcmp(section, nav_context_name(context))) break;
+        toml_table_t *table = toml_table_in(keys, section);
+        if (context == NAV_CONTEXT_COUNT || !table) {
+            snprintf(error, size, "unknown key context: %s", section); return -1;
+        }
+        for (int j = 0; ; j++) {
+            const char *sequence = toml_key_in(table, j);
+            if (!sequence) break;
+            toml_datum_t value = toml_string_in(table, sequence);
+            if (!value.ok) {
+                snprintf(error, size, "binding %s must name a command", sequence); return -1;
+            }
+            int result = nav_keymap_bind(map, context, sequence, value.u.s, error, size);
+            free(value.u.s);
+            if (result) return -1;
+        }
+    }
+    return 0;
+}
+
+int nav_config_load_file(NavConfig *config, const char *selected, char *error, size_t error_size)
 {
     char directory[NAV_PATH_MAX], path[NAV_PATH_MAX], parse_error[256] = {0};
     NavConfig candidate;
     nav_config_defaults(&candidate);
-    if (nav_platform_config_dir(directory, sizeof directory) || snprintf(path, sizeof path, "%s/nav.toml", directory) >= (int)sizeof path)
-    {
+    candidate.explicit_config = selected != NULL;
+    if (selected) {
+        if (!selected[0] || strlen(selected) >= sizeof path) {
+            snprintf(error, error_size, "invalid explicit configuration path");
+            *config = candidate;
+            return -1;
+        }
+        snprintf(path, sizeof path, "%s", selected);
+        snprintf(directory, sizeof directory, "%s", selected);
+        char *slash = strrchr(directory, '/');
+#ifdef _WIN32
+        char *backslash = strrchr(directory, '\\');
+        if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
+        if (slash) slash[1] = 0;
+        else snprintf(directory, sizeof directory, ".");
+    } else if (nav_platform_config_dir(directory, sizeof directory) ||
+               snprintf(path, sizeof path, "%s/nav.toml", directory) >= (int)sizeof path) {
         snprintf(error, error_size, "configuration path is unavailable");
         *config = candidate;
         return -1;
     }
-    FILE *file = fopen(path, "r");
+    snprintf(candidate.config_path, sizeof candidate.config_path, "%s", path);
+    FILE *file = nav_platform_fopen(path, "r");
     if (!file)
     {
-        if (errno == ENOENT)
+        if (errno == ENOENT && !selected)
         {
             *config = candidate;
             return nav_config_write_defaults(error, error_size);
@@ -526,7 +591,7 @@ int nav_config_load(NavConfig *config, char *error, size_t error_size)
     fclose(file);
     if (!root)
     {
-        snprintf(error, error_size, "configuration error in %s: %s; using defaults", path, parse_error);
+        snprintf(error, error_size, "configuration error in %s: %s%s", path, parse_error, selected ? "" : "; using defaults");
         *config = candidate;
         return -1;
     }
@@ -604,6 +669,18 @@ int nav_config_load(NavConfig *config, char *error, size_t error_size)
     }
     if (theme)
         read_string(theme, "name", candidate.theme_name, sizeof candidate.theme_name);
+    toml_table_t *app = toml_table_in(root, "app");
+    if (app) {
+        read_string(app, "theme", candidate.theme_name, sizeof candidate.theme_name);
+        read_bool(app, "confirm_delete", &candidate.confirm_delete);
+        read_bool(app, "show_hidden", &candidate.show_hidden);
+    }
+    if (read_keymap(root, &candidate.keymap, error, error_size)) {
+        toml_free(root);
+        nav_keymap_defaults(&candidate.keymap);
+        *config = candidate;
+        return -1;
+    }
     toml_free(root);
     load_repositories(&candidate, directory);
     if (nav_config_validate(&candidate, error, error_size))
@@ -614,3 +691,6 @@ int nav_config_load(NavConfig *config, char *error, size_t error_size)
     *config = candidate;
     return 0;
 }
+
+int nav_config_load(NavConfig *config, char *error, size_t error_size)
+{ return nav_config_load_file(config, NULL, error, error_size); }

@@ -10,16 +10,28 @@ int main(int argc, char **argv)
     char vault_path[NAV_PATH_MAX], error[256];
     const char *left, *right;
     int result;
-    if (argc > 1 && !strcmp(argv[1], "--help"))
-    {
-        puts("Usage: nav [left-directory] [right-directory]\nNavi8or - keyboard-first local and remote repository navigator.");
-        return 0;
+    const char *config_file = NULL;
+    int argument = 1;
+    while (argument < argc && argv[argument][0] == '-') {
+        const char *option = argv[argument++];
+        if (!strcmp(option, "--")) break;
+        if (!strcmp(option, "--help")) {
+            puts("Usage: nav [-i config-file] [left-directory] [right-directory]\nNavi8or - keyboard-first local and remote repository navigator.");
+            return 0;
+        }
+        if (option[1] == 'i') {
+            config_file = option[2] ? option + 2 : argument < argc ? argv[argument++] : NULL;
+            if (config_file && config_file[0] && config_file[0] != '-') continue;
+            fprintf(stderr, "nav: -i requires a configuration file\n");
+        } else fprintf(stderr, "nav: unknown option: %s\n", option);
+        return 2;
     }
+    if (argc - argument > 2) { fprintf(stderr, "nav: too many directories\n"); return 2; }
     memset(&app, 0, sizeof app);
-    if (nav_config_load(&app.config, error, sizeof error))
+    if (nav_config_load_file(&app.config, config_file, error, sizeof error))
     {
         fprintf(stderr, "nav: %s\n", error[0] ? error : "unable to load configuration");
-        nav_config_defaults(&app.config);
+        if (config_file) return 2;
     }
     app.show_hidden = app.config.show_hidden;
     if (app.config.warning[0])
@@ -27,27 +39,29 @@ int main(int argc, char **argv)
     if (!nav_platform_config_dir(config_directory, sizeof config_directory) &&
         snprintf(vault_path, sizeof vault_path, "%s/vault.bin",
                  config_directory) < (int)sizeof vault_path &&
-        access(vault_path, F_OK) == 0 &&
+        nav_platform_access(vault_path, F_OK) == 0 &&
         nav_credential_store_open_vault(&app.credential_store, vault_path,
                                         error, sizeof error))
         fprintf(stderr, "nav: unable to open credential Vault: %s\n", error);
-    if (!getcwd(cwd, sizeof cwd))
+    if (!nav_platform_getcwd(cwd, sizeof cwd))
     {
         perror("nav");
         nav_credential_store_close(app.credential_store);
         return 1;
     }
-    left = argc > 1 ? argv[1] : cwd;
-    right = argc > 2 ? argv[2] : cwd;
-    if ((!strncmp(left, "http://", 7) || !strncmp(left, "https://", 8)) || (!strncmp(right, "http://", 7) || !strncmp(right, "https://", 8)))
-    {
-        fprintf(stderr, "nav: HTTP providers are planned but not implemented\n");
-        nav_credential_store_close(app.credential_store);
-        return 2;
-    }
+    left = argument < argc ? argv[argument++] : cwd;
+    right = argument < argc ? argv[argument] : cwd;
     for (int i = 0; i < 2; i++)
     {
-        app.panes[i].provider = nav_local_provider();
+        app.panes[i].provider = nav_provider_for_location(NULL, i ? right : left,
+                                                         error, sizeof error);
+        if (!app.panes[i].provider) {
+            fprintf(stderr, "nav: %s\n", error);
+            for (int opened = 0; opened < i; opened++)
+                nav_provider_destroy(app.panes[opened].provider);
+            nav_credential_store_close(app.credential_store);
+            return 2;
+        }
         app.panes[i].view = app.config.panel_view;
         app.panes[i].history.current = -1;
         app.panes[i].sort_mode = app.config.sort;

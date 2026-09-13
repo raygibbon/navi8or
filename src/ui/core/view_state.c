@@ -6,12 +6,12 @@ void nav_ui_text_view_clamp(NavUiTextView *view,size_t count,size_t page){
     if(view->top>maximum)view->top=maximum;
 }
 
-void nav_ui_text_view_key(NavUiTextView *view,int key,size_t count,size_t page){
-    if(key==NAV_KEY_HOME)view->top=0;
-    else if(key==NAV_KEY_END)view->top=count>page?count-page:0;
-    else if(key==NAV_KEY_UP&&view->top)view->top--;
-    else if(key==NAV_KEY_DOWN&&view->top+(page<count?page:count)<count)view->top++;
-    else if(key==NAV_KEY_PAGE_UP)view->top=view->top>page?view->top-page:0;
-    else if(key==NAV_KEY_PAGE_DOWN)view->top+=page?page:1;
+void nav_ui_text_view_command(NavUiTextView *view,NavCommand command,size_t count,size_t page){
+    if(command==NAV_CMD_HOME)view->top=0;
+    else if(command==NAV_CMD_END)view->top=count>page?count-page:0;
+    else if(command==NAV_CMD_UP&&view->top)view->top--;
+    else if(command==NAV_CMD_DOWN&&view->top+(page<count?page:count)<count)view->top++;
+    else if(command==NAV_CMD_PAGE_UP)view->top=view->top>page?view->top-page:0;
+    else if(command==NAV_CMD_PAGE_DOWN)view->top+=page?page:1;
     nav_ui_text_view_clamp(view,count,page);
 }

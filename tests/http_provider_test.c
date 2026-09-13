@@ -205,9 +205,9 @@ int main(int argc, char **argv)
                                             sizeof second.url, error,
                                             sizeof error) == 0);
         snprintf(second.credential, sizeof second.credential, "local-bearer");
-        first_provider = nav_http_provider_create(&repository, credential_store,
+        first_provider = nav_provider_create_repository(&repository, credential_store,
                                                   error, sizeof error);
-        second_provider = nav_http_provider_create(&second, credential_store,
+        second_provider = nav_provider_create_repository(&second, credential_store,
                                                    error, sizeof error);
         assert(first_provider && second_provider);
         assert(first_provider->list(first_provider, repository.url, false,
@@ -256,11 +256,11 @@ int main(int argc, char **argv)
                                          "http%s", authority) <
                                 (int)sizeof insecure_url);
             snprintf(insecure.url, sizeof insecure.url, "%s", insecure_url);
-            rejected = nav_http_provider_create(&insecure, credential_store,
+            rejected = nav_provider_create_repository(&insecure, credential_store,
                                                 error, sizeof error);
             assert(!rejected && strstr(error, "require HTTPS"));
             snprintf(missing.credential, sizeof missing.credential, "deleted");
-            rejected = nav_http_provider_create(&missing, credential_store,
+            rejected = nav_provider_create_repository(&missing, credential_store,
                                                 error, sizeof error);
             assert(rejected);
             {
@@ -272,7 +272,7 @@ int main(int argc, char **argv)
             }
             nav_provider_destroy(rejected);
             nav_credential_store_lock(credential_store);
-            rejected = nav_http_provider_create(&repository, credential_store,
+            rejected = nav_provider_create_repository(&repository, credential_store,
                                                 error, sizeof error);
             assert(rejected);
             {
@@ -287,7 +287,7 @@ int main(int argc, char **argv)
                                                error, sizeof error) == 0);
         }
     }
-    provider = nav_http_provider_create(&repository, credential_store,
+    provider = nav_provider_create_repository(&repository, credential_store,
                                         error, sizeof error);
     assert(provider);
     if (argc == 8 && !strcmp(argv[7], "stream-redirects")) {
@@ -359,7 +359,7 @@ int main(int argc, char **argv)
                                          repository.url) < (int)sizeof upload_url);
             writable.writable = true;
             snprintf(writable.url, sizeof writable.url, "%s", upload_url);
-            upload = nav_http_provider_create(&writable, credential_store,
+            upload = nav_provider_create_repository(&writable, credential_store,
                                               error, sizeof error);
             assert(upload && upload->location(upload, upload_url, &root, error,
                                               sizeof error) == 0);
@@ -587,7 +587,7 @@ int main(int argc, char **argv)
         writable.mkdir_enabled = true;
         writable.delete_enabled = true;
         writable.rename_enabled = true;
-        upload = nav_http_provider_create(&writable, credential_store,
+        upload = nav_provider_create_repository(&writable, credential_store,
                                           error, sizeof error);
         assert(upload && nav_provider_supports(upload, NAV_CAP_WRITE |
                                                 NAV_CAP_MKDIR | NAV_CAP_DELETE |

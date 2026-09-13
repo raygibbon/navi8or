@@ -24,6 +24,42 @@ static int file_contains(const char *path, const char *needle)
     return strstr(contents, needle) != NULL;
 }
 
+static void test_explicit_config(void)
+{
+    char root[] = "/tmp/nav-explicit-XXXXXX", path[4096], missing[4096], error[256];
+    NavConfig config;
+    assert(mkdtemp(root));
+    path_join(path, sizeof path, root, "custom.toml");
+    path_join(missing, sizeof missing, root, "missing.toml");
+    assert(nav_config_load_file(&config, missing, error, sizeof error) != 0);
+    assert(access(missing, F_OK) != 0);
+    FILE *file = fopen(path, "w"); assert(file);
+    fputs("[app]\ntheme = \"classic-dos\"\nshow_hidden = true\n"
+          "[keys.panel]\n\"F5\" = \"file.view\"\n\"Ctrl+X C\" = \"file.copy\"\n", file);
+    assert(fclose(file) == 0);
+    assert(nav_config_load_file(&config, path, error, sizeof error) == 0);
+    assert(config.explicit_config && !strcmp(config.config_path, path));
+    assert(config.show_hidden && !strcmp(config.theme_name, "classic-dos"));
+    assert(nav_config_save_repositories(&config, error, sizeof error) == 0);
+    char sidecar[4096]; path_join(sidecar, sizeof sidecar, root, "repositories.toml");
+    assert(access(sidecar, F_OK) == 0); unlink(sidecar);
+    NavInput input = {0}; NavTermEvent event = {.type = NAV_TERM_EVENT_KEY, .key = NAV_KEY_F5};
+    assert(nav_input_resolve(&input, &config.keymap, NAV_CONTEXT_PANEL, &event).command == NAV_CMD_VIEW);
+    const char *invalid[] = {
+        "[keys.panel]\n\"F5\" = \"does.not.exist\"\n",
+        "[keys.panel]\n\"F5\" = \"file.copy\"\n\"f5\" = \"file.view\"\n",
+        "[keys.panel]\n\"Ctrl+F\" = \"file.copy\"\n",
+        "[keys.invalid]\n\"F5\" = \"file.copy\"\n",
+        "[keys.panel]\n\"F5\" = 42\n"
+    };
+    for (size_t i = 0; i < sizeof invalid / sizeof *invalid; i++) {
+        file = fopen(path, "w"); assert(file); fputs(invalid[i], file); fclose(file);
+        assert(nav_config_load_file(&config, path, error, sizeof error) != 0);
+        assert(error[0]);
+    }
+    unlink(path); rmdir(root);
+}
+
 int main(void)
 {
     char root[] = "/tmp/nav-config-XXXXXX", path[4096], repositories_path[4096], error[256] = {0};
@@ -31,6 +67,7 @@ int main(void)
     assert(setenv("XDG_CONFIG_HOME", root, 1) == 0);
     unsetenv("HOME");
     NavConfig config;
+    test_explicit_config();
     assert(nav_config_load(&config, error, sizeof error) == 0);
     path_join(path, sizeof path, root, "nav/nav.toml");
     assert(access(path, F_OK) == 0);
@@ -83,6 +120,9 @@ int main(void)
     assert(!strcmp(config.repositories[2].credential, "local-bearer"));
     assert(nav_config_save_repositories(&config, error, sizeof error) == 0);
     assert(file_contains(repositories_path, "credential = \"local-basic\""));
+    assert(!file_contains(repositories_path, "testpass"));
+    assert(!file_contains(repositories_path, "bearer token"));
+    assert(!file_contains(repositories_path, "auth_type"));
     assert(!file_contains(repositories_path, "password") &&
            !file_contains(repositories_path, "bearer-test-token"));
     assert(nav_config_load(&config, error, sizeof error) == 0 &&

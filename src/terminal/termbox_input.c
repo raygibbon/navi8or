@@ -29,7 +29,8 @@ static int translate_key(unsigned key)
     case TB_KEY_PGDN: return NAV_KEY_PAGE_DOWN;
     case TB_KEY_DELETE: return NAV_KEY_DELETE;
     case TB_KEY_ENTER: return NAV_KEY_ENTER;
-    case TB_KEY_TAB: return NAV_KEY_TAB;
+    case TB_KEY_TAB:
+    case TB_KEY_BACK_TAB: return NAV_KEY_TAB;
     case TB_KEY_BACKSPACE:
     case TB_KEY_BACKSPACE2: return NAV_KEY_BACKSPACE;
     case TB_KEY_ESC: return NAV_KEY_ESCAPE;
@@ -75,5 +76,14 @@ int nav_term_translate_tb_event(const struct tb_event *raw, NavTermEvent *event)
         raw->key == TB_KEY_TAB || raw->key == TB_KEY_BACKSPACE ||
         raw->key == TB_KEY_BACKSPACE2)
         event->modifiers &= ~NAV_MOD_CTRL;
+    if (raw->key == TB_KEY_BACK_TAB) event->modifiers |= NAV_MOD_SHIFT;
+    if (raw->key == 0 && raw->ch == 0) {
+        event->key = ' ';
+        event->modifiers |= NAV_MOD_CTRL;
+    }
+    if (event->key >= 1 && event->key <= 31) {
+        event->key = event->key <= 26 ? 'a' + event->key - 1 : '@' + event->key;
+        event->modifiers |= NAV_MOD_CTRL;
+    }
     return 1;
 }

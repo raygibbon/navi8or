@@ -22,7 +22,7 @@ void nav_show_properties(const NavEntry *entry, const char *type)
     if (!entry)
         return;
     if (entry->flags & NAV_ENTRY_MODIFIED_KNOWN) {
-        localtime_r(&entry->modified, &tm_value);
+        nav_platform_localtime(&entry->modified, &tm_value);
         strftime(timebuf, sizeof timebuf, "%Y-%m-%d %H:%M", &tm_value);
     } else snprintf(timebuf, sizeof timebuf, "Unknown");
     snprintf(name, sizeof name, "Name:      %s", entry->name);

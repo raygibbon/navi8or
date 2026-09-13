@@ -163,40 +163,40 @@ void nav_ui_frame(int x, int y, int width, int height, const int *separators,
     free(rows);
 }
 
-void nav_ui_window_header(int x, int width, int number, char letter,
+void nav_ui_window_header(int x, int y, int width, int number, char letter,
                          const char *name, const char *metadata, bool active)
 {
     char identity[5], right[13];
     int field_width, field_col, name_width;
     const NavTheme *theme = nav_term_theme();
     if (width <= 0) return;
-    nav_ui_text(x, 0, width, "", NAV_STYLE_HEADER);
+    nav_ui_text(x, y, width, "", NAV_STYLE_HEADER);
     if (!theme || theme->style == NAV_UI_STYLE_MODERN) {
         field_width = width >= 20 ? 12 : 0;
         name_width = width - field_width - 2;
         if (name_width > 0)
-            nav_ui_text(x + 1, 0, name_width, name ? name : "",
+            nav_ui_text(x + 1, y, name_width, name ? name : "",
                         NAV_STYLE_HEADER);
         if (field_width > 0) {
             snprintf(right, sizeof right, "%12.12s", metadata ? metadata : "");
-            nav_ui_text(x + width - field_width, 0, field_width, right,
+            nav_ui_text(x + width - field_width, y, field_width, right,
                         NAV_STYLE_HEADER);
         }
         return;
     }
     snprintf(identity, sizeof identity, "%2d%c", number % 100,
              active ? (char)toupper((unsigned char)letter) : (char)tolower((unsigned char)letter));
-    nav_ui_text(x, 0, width < 3 ? width : 3, identity, NAV_STYLE_HEADER);
+    nav_ui_text(x, y, width < 3 ? width : 3, identity, NAV_STYLE_HEADER);
     /* show_window_fname() starts at left+5 and reserves the final 12 columns
      * for show_line_col(). Navi8or maps that fixed field to sort/count/filter. */
     field_width = width >= 16 ? 12 : width - 4;
     if (field_width < 0) field_width = 0;
     field_col = x + width - field_width;
     name_width = width - 18;
-    if (name_width > 0) nav_ui_text(x + 5, 0, name_width, name ? name : "", NAV_STYLE_HEADER);
+    if (name_width > 0) nav_ui_text(x + 5, y, name_width, name ? name : "", NAV_STYLE_HEADER);
     if (field_width > 0) {
         snprintf(right, sizeof right, "%12.12s", metadata ? metadata : "");
-        nav_ui_text(field_col, 0, field_width,
+        nav_ui_text(field_col, y, field_width,
                     right + (12 - field_width), NAV_STYLE_HEADER);
     }
 }

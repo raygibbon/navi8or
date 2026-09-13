@@ -361,13 +361,14 @@ def run_state(executable, left, right, config_home, name, enter, leave=b"\x1b",
 
 def run_screen_check(executable, left, right, config_home, name, keys,
                      expected, leave):
-    pid, fd = spawn_nav(executable, left, right, config_home)
+    screen = TerminalScreen(100, 30)
+    pid, fd = spawn_nav(executable, left, right, config_home, screen=screen)
     exited = False
     output = bytearray()
     try:
         for value in keys:
-            output.extend(write(fd, value, 0.25))
-        if expected not in output:
+            output.extend(write(fd, value, 0.25, screen=screen))
+        if expected.decode("utf-8") not in screen.text():
             raise RuntimeError(
                 f"{name}: expected screen text {expected!r}; "
                 f"terminal tail was {bytes(output[-2000:])!r}")
@@ -467,8 +468,12 @@ def run_repository_menu_check(executable, left, right, config_home):
         write(fd, b" Edited")
         write(fd, b"\r")
         write(fd, b"\r")  # retain URL
-        write(fd, b"local-basic")
-        write(fd, b"\r")  # set a Basic credential reference
+        write(fd, DOWN)  # Add credential; create Vault inline
+        write(fd, b"\r")
+        for value in [b"inline-master", b"\r", b"inline-master", b"\r",
+                      b"\r", b"local-basic", b"\r", b"navi8or", b"\r",
+                      b"testpass", b"\r", b"testpass", b"\r"]:
+            write(fd, value, 0.35)
         write(fd, b"\r", 0.3)  # retain Verify TLS
         write(fd, b"\x7f" * 3)
         write(fd, b"on")
@@ -489,9 +494,12 @@ def run_repository_menu_check(executable, left, right, config_home):
         write(fd, b"\r")  # choose the first repository
         write(fd, b"\r")  # retain name
         write(fd, b"\r")  # retain URL
-        write(fd, b"\x7f" * len("local-basic"))
-        write(fd, b"local-bearer")
+        write(fd, UP)  # none
+        write(fd, UP)  # Add credential (wrap)
         write(fd, b"\r")
+        for value in [DOWN, b"\r", b"local-bearer", b"\r",
+                      b"test-token", b"\r", b"test-token", b"\r"]:
+            write(fd, value, 0.35)
         for _ in range(5):
             write(fd, b"\r", 0.2)
         with open(repositories_path, encoding="utf-8") as stream:
@@ -538,7 +546,7 @@ def run_vault_ui_check(executable, left, right, config_home):
         if "No credentials" not in screen.text():
             raise RuntimeError("Empty unlocked Vault was not rendered")
         visible_output.extend(write(fd, b"\x1b[18~", screen=screen))
-        for value in [b"ui-basic", b"\r", b"\r", b"screen-user", b"\r",
+        for value in [b"\r", b"ui-basic", b"\r", b"screen-user", b"\r",
                       credential_secret, b"\r", credential_secret, b"\r"]:
             visible_output.extend(write(fd, value, 0.35 if value == b"\r" else 0.12,
                                         screen=screen))
@@ -546,7 +554,7 @@ def run_vault_ui_check(executable, left, right, config_home):
         if "ui-basic" not in text or "Basic" not in text or "screen-user" not in text:
             raise RuntimeError("Basic credential metadata was not listed")
         visible_output.extend(write(fd, b"\x1b[18~", screen=screen))
-        for value in [b"ui-bearer", b"\r", b"\x7f" * len("Basic"), b"Bearer", b"\r",
+        for value in [DOWN, b"\r", b"ui-bearer", b"\r",
                       bearer_secret, b"\r", bearer_secret, b"\r"]:
             visible_output.extend(write(fd, value, 0.35 if value == b"\r" else 0.12,
                                         screen=screen))

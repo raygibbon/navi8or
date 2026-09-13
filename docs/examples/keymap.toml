@@ -1,0 +1,41 @@
+# nav -i docs/examples/keymap.toml [left-directory] [right-directory]
+# Unspecified bindings and settings retain their built-in defaults.
+[app]
+theme = "classic-dos"
+confirm_delete = true
+show_hidden = false
+
+[panels]
+view = "full"
+directories_first = true
+
+[keys.global]
+"Ctrl+Q" = "app.quit"
+"Ctrl+\\" = "menu.open"
+"F1" = "help.open"
+
+[keys.panel]
+"Tab" = "panel.switch"
+"Enter" = "file.open"
+"Backspace" = "panel.parent"
+"F3" = "file.view"
+"F4" = "file.edit"
+"F5" = "file.copy"
+"F6" = "file.move"
+"F7" = "file.mkdir"
+"F8" = "file.delete"
+"Ctrl+F C" = "file.copy"
+"Ctrl+F M" = "file.move"
+"Ctrl+F R" = "file.rename"
+"Ctrl+F D" = "file.delete"
+"Ctrl+F K" = "file.mkdir"
+# Add another family without changing any action implementation:
+"Ctrl+X C" = "file.copy"
+
+[keys.viewer]
+"Ctrl+S" = "search.find"
+"Ctrl+Q" = "viewer.close"
+
+[keys.dialog]
+"Escape" = "dialog.cancel"
+"Ctrl+Q" = "dialog.cancel"

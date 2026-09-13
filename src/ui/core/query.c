@@ -54,7 +54,7 @@ static int prompt_value(const char *title, const char *label, char *buffer,
     (void)title;
     nav_ui_field_init(&field, buffer, capacity);
     for (;;) {
-        NavTermEvent event;
+        NavAction event;
         if (redraw)
             redraw(data);
         else
@@ -66,7 +66,7 @@ static int prompt_value(const char *title, const char *label, char *buffer,
         }
         draw_prompt(label, &field, secret);
         nav_term_present();
-        if (nav_term_poll_event(&event, -1) <= 0)
+        if (nav_ui_input(NAV_CONTEXT_DIALOG, &event) <= 0)
             continue;
         if (event.type == NAV_TERM_EVENT_RESIZE) {
             nav_ui_free_area(&saved);
@@ -109,7 +109,7 @@ bool nav_ui_confirm(const char *question, NavUiRedrawFn redraw, void *data)
     int saved_valid = 0;
     bool accepted = false;
     for (;;) {
-        NavTermEvent event;
+        NavAction event;
         char prompt[512];
         if (redraw)
             redraw(data);
@@ -132,7 +132,7 @@ bool nav_ui_confirm(const char *question, NavUiRedrawFn redraw, void *data)
         }
         nav_term_hide_cursor();
         nav_term_present();
-        if (nav_term_poll_event(&event, -1) <= 0)
+        if (nav_ui_input(NAV_CONTEXT_CONFIRM, &event) <= 0)
             continue;
         if (event.type == NAV_TERM_EVENT_RESIZE) {
             nav_ui_free_area(&saved);
@@ -141,11 +141,11 @@ bool nav_ui_confirm(const char *question, NavUiRedrawFn redraw, void *data)
         }
         if (event.type != NAV_TERM_EVENT_KEY)
             continue;
-        if (event.key == 'y' || event.key == 'Y' || event.key == NAV_KEY_ENTER) {
+        if (event.command == NAV_CMD_ACCEPT) {
             accepted = true;
             break;
         }
-        if (event.key == 'n' || event.key == 'N' || event.key == NAV_KEY_ESCAPE)
+        if (event.command == NAV_CMD_CANCEL)
             break;
     }
     if (saved_valid)

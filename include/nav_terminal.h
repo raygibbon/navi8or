@@ -52,7 +52,7 @@ typedef struct
 typedef enum
 {
     NAV_KEY_NONE,
-    NAV_KEY_UP,
+    NAV_KEY_UP = 0x110000,
     NAV_KEY_DOWN,
     NAV_KEY_LEFT,
     NAV_KEY_RIGHT,
@@ -65,7 +65,7 @@ typedef enum
     NAV_KEY_ENTER,
     NAV_KEY_ESCAPE,
     NAV_KEY_TAB,
-    NAV_KEY_F1 = 1101,
+    NAV_KEY_F1 = 0x110100,
     NAV_KEY_F2,
     NAV_KEY_F3,
     NAV_KEY_F4,

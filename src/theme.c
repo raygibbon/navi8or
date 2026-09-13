@@ -547,7 +547,7 @@ int nav_theme_load_file(const char *path, const char *id, NavThemeResult *result
                  "theme path or identifier is unavailable");
         return -1;
     }
-    file = fopen(path, "r");
+    file = nav_platform_fopen(path, "r");
     if (!file)
     {
         snprintf(result->error, sizeof result->error, "theme file is unavailable");

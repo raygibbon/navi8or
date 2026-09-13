@@ -69,6 +69,12 @@ make vault-test
 
 ## Configuration and themes
 
+Use `nav -i path/to/nav.toml` (or `-ipath/to/nav.toml`) to select a TOML file
+without automatic config discovery. Keyboard bindings and generic Ctrl-prefix
+families resolve to shared named commands. See [input/config conventions and
+default keys](docs/INPUT_COMMANDS.md) and the [example keymap](docs/examples/keymap.toml).
+Refresh is now `Ctrl+R R`; the traditional file-manager function keys remain.
+
 On first run Navi8or creates `$XDG_CONFIG_HOME/nav/nav.toml` and
 `$XDG_CONFIG_HOME/nav/themes/solar-dark.toml`; without `XDG_CONFIG_HOME` it
 uses `~/.config/nav/`. These files control hidden files, sort mode, Viewer line
@@ -102,9 +108,10 @@ Directory copying and recursive deletion are not implemented; Navi8or reports th
 ## Repositories
 
 The Repositories menu can add, edit, remove, and open saved HTTP/HTTPS
-directory-index roots. A repository may optionally name a Basic or Bearer
-credential from the encrypted Vault; a blank credential remains anonymous for
-backward compatibility. Only the credential name is stored in
+directory-index roots. The Credential picker lists existing Basic/Bearer records
+and offers **<none>** for anonymous access and **+ Add credential...**. Inline
+creation creates or unlocks the Vault when needed, then selects the new record.
+The credential type determines authentication; repository config stores no auth type. Only the credential name is stored in
 `repositories.toml`, and credentialed repositories require HTTPS. See
 [`docs/VAULT.md`](docs/VAULT.md).
 

@@ -33,16 +33,11 @@ size_t nav_ui_menu_move_major(size_t current, size_t count, int direction)
     return direction > 0 ? (current + 1) % count : (current ? current - 1 : count - 1);
 }
 
-int nav_ui_menu_major_motion(const NavTermEvent *event)
+int nav_ui_menu_major_motion(const NavAction *event)
 {
-    /* TDX accepts both direct and Ctrl-modified horizontal bar movement. */
-    if (!event || event->type != NAV_TERM_EVENT_KEY ||
-        (event->modifiers & (NAV_MOD_ALT | NAV_MOD_SHIFT)))
-        return 0;
-    if (event->key == NAV_KEY_RIGHT)
-        return 1;
-    if (event->key == NAV_KEY_LEFT)
-        return -1;
+    if (!event || event->type != NAV_TERM_EVENT_KEY) return 0;
+    if (event->command == NAV_CMD_RIGHT) return 1;
+    if (event->command == NAV_CMD_LEFT) return -1;
     return 0;
 }
 

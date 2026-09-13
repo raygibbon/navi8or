@@ -51,7 +51,8 @@ static void test_commander_layout(void)
 {
     const int widths[] = {120, 81, 64, 28, 20};
     NavCommanderLayout layout;
-    NavFunctionKeySegment segments[9];
+    NavFunctionKeySegment segments[12];
+    NavKeymap map; nav_keymap_defaults(&map);
     for (size_t test = 0; test < sizeof widths / sizeof *widths; test++) {
         size_t count;
         assert(nav_commander_layout(widths[test], 25, &layout));
@@ -66,7 +67,7 @@ static void test_commander_layout(void)
         assert(layout.pane_x[1] == layout.divider + 1);
         assert(layout.pane_x[1] + layout.pane_width[1] == widths[test]);
         assert(layout.pane_width[0] + layout.pane_width[1] + 1 == widths[test]);
-        count = nav_function_key_layout(widths[test], segments, 9);
+        count = nav_function_key_layout(widths[test], &map, NAV_CONTEXT_PANEL, segments, 12);
         assert(count == 9 && segments[0].key == 1 && segments[1].key == 2 && segments[8].key == 10);
         for (size_t index = 0; index < count; index++) {
             assert(segments[index].x >= 0 && segments[index].width >= segments[index].key_width);
@@ -74,9 +75,8 @@ static void test_commander_layout(void)
             if (index) assert(segments[index].x == segments[index - 1].x + segments[index - 1].width);
         }
         assert(segments[count - 1].x + segments[count - 1].width == widths[test]);
-        if (widths[test] >= 58) assert(!strcmp(segments[6].label, "MkDir"));
-        else if (widths[test] >= 28) assert(!strcmp(segments[6].label, "D"));
-        else assert(!strcmp(segments[6].label, ""));
+        assert(!strcmp(segments[6].label, "MkDir"));
+        assert(segments[6].command == NAV_CMD_MKDIR);
     }
     assert(nav_commander_layout_for_style(80, 25, NAV_UI_STYLE_CLASSIC,
                                           &layout));
@@ -94,7 +94,7 @@ static void test_commander_layout(void)
                                            &layout));
     assert(nav_commander_layout_for_style(80, 9, NAV_UI_STYLE_CLASSIC,
                                           &layout) && layout.body_height == 1);
-    assert(nav_function_key_layout(18, segments, 9) == 0);
+    assert(nav_function_key_layout(18, &map, NAV_CONTEXT_PANEL, segments, 12) == 0);
     {
         NavEntry unknown = {0}, known = {.flags = NAV_ENTRY_SIZE_KNOWN};
         assert(!nav_entry_has_known_size(NULL));

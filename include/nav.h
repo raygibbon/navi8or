@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <time.h>
 #include "nav_credential.h"
+#include "nav_platform.h"
+#include "nav_input.h"
 
 #define NAV_PATH_MAX 4096
 #define NAV_NAME_MAX 256
@@ -76,6 +78,9 @@ typedef struct
 } NavPanelFullLayout;
 typedef struct
 {
+    NavKeymap keymap;
+    char config_path[NAV_PATH_MAX];
+    bool explicit_config;
     bool confirm_delete;
     bool confirm_overwrite;
     bool show_hidden;
@@ -107,7 +112,9 @@ typedef enum
     NAV_MODE_DIALOG,
     NAV_MODE_PROMPT,
     NAV_MODE_HELP,
-    NAV_MODE_TRANSFER
+    NAV_MODE_TRANSFER,
+    NAV_MODE_EDITOR,
+    NAV_MODE_TERMINAL
 } NavMode;
 typedef void (*NavProgressFn)(uint64_t done, uint64_t total, bool total_known, void *userdata);
 
@@ -194,6 +201,7 @@ typedef struct
     int key;
     int x, width, key_width;
     const char *label;
+    NavCommand command;
 } NavFunctionKeySegment;
 typedef struct
 {
@@ -215,6 +223,7 @@ typedef struct
     NavCredentialStore *credential_store;
 } NavApp;
 void nav_config_defaults(NavConfig *);
+int nav_config_load_file(NavConfig *, const char *, char *, size_t);
 int nav_config_load(NavConfig *, char *, size_t);
 int nav_config_validate(const NavConfig *, char *, size_t);
 int nav_config_write_defaults(char *, size_t);
@@ -228,9 +237,20 @@ typedef struct
     bool wait;
 } NavEditorConfig;
 
+bool nav_provider_supports_credential_type(const char *, NavCredentialType);
 NavProvider *nav_local_provider(void);
 NavProvider *nav_http_provider_create(const NavRepository *, NavCredentialStore *,
                                       char *, size_t);
+NavProvider *nav_smb_provider_create(const NavRepository *, NavCredentialStore *,
+                                     char *, size_t);
+/* Returns a borrowed current/local provider. Relative locations retain current;
+   absolute paths select local. Explicit scheme:// URLs require a matching
+   configured provider. Colon filenames are not URIs; Windows drive paths
+   select local without changing platform-specific path normalization. */
+NavProvider *nav_provider_for_location(NavProvider *, const char *, char *, size_t);
+/* Creates a configured provider; release it with nav_provider_destroy. */
+NavProvider *nav_provider_create_repository(const NavRepository *,
+                                           NavCredentialStore *, char *, size_t);
 int nav_http_parse_directory_html(NavProvider *, const char *, const char *,
                                   NavListing *, char *, size_t);
 void nav_provider_destroy(NavProvider *);
@@ -268,7 +288,11 @@ void nav_panel_full_layout(int, NavPanelFullLayout *);
 bool nav_commander_layout(int, int, NavCommanderLayout *);
 bool nav_commander_layout_for_style(int, int, NavUiStyle,
                                     NavCommanderLayout *);
-size_t nav_function_key_layout(int, NavFunctionKeySegment *, size_t);
+typedef struct {
+    int width, height, menu_row, workspace_top, workspace_bottom, status_row, command_row;
+} NavShellLayout;
+NavShellLayout nav_shell_layout(int, int);
+size_t nav_function_key_layout(int, const NavKeymap *, NavInputContext, NavFunctionKeySegment *, size_t);
 void nav_provider_display_name(const NavProvider *, char *, size_t);
 bool nav_entry_has_known_size(const NavEntry *);
 void nav_pane_sort(NavPane *, NavSortMode);

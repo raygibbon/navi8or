@@ -32,5 +32,21 @@ int main(void)
     expect(TB_KEY_CTRL_BACKSLASH, 0, '\\', NAV_MOD_CTRL);
     expect(TB_KEY_CTRL_R, 0, 'r', NAV_MOD_CTRL);
     expect(TB_KEY_CTRL_U, 0, 'u', NAV_MOD_CTRL);
+    expect(TB_KEY_CTRL_Q, 0, 'q', NAV_MOD_CTRL);
+    expect(TB_KEY_CTRL_F, 0, 'f', NAV_MOD_CTRL);
+    expect(TB_KEY_F3, 0, NAV_KEY_F3, 0);
+    expect(TB_KEY_F5, 0, NAV_KEY_F5, 0);
+    expect(TB_KEY_F10, 0, NAV_KEY_F10, 0);
+    expect(TB_KEY_BACK_TAB, 0, NAV_KEY_TAB, NAV_MOD_SHIFT);
+    struct tb_event raw = {.type = TB_EVENT_KEY, .ch = 6, .mod = TB_MOD_CTRL};
+    NavTermEvent event;
+    assert(nav_term_translate_tb_event(&raw, &event) == 1);
+    assert(event.key == 'f' && event.modifiers == NAV_MOD_CTRL);
+    raw.ch = 28;
+    assert(nav_term_translate_tb_event(&raw, &event) == 1);
+    assert(event.key == '\\' && event.modifiers == NAV_MOD_CTRL);
+    raw.ch = 0;
+    assert(nav_term_translate_tb_event(&raw, &event) == 1);
+    assert(event.key == ' ' && event.modifiers == NAV_MOD_CTRL);
     return 0;
 }

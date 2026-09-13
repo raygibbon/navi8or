@@ -5,7 +5,10 @@
 static NavUiFieldResult key(NavUiField *field, int value, unsigned modifiers)
 {
     NavTermEvent event = {NAV_TERM_EVENT_KEY, value, modifiers, 0, 0};
-    return nav_ui_field_event(field, &event);
+    NavKeymap map; NavInput input = {0};
+    nav_keymap_defaults(&map);
+    NavAction action = nav_input_resolve(&input, &map, NAV_CONTEXT_DIALOG, &event);
+    return nav_ui_field_event(field, &action);
 }
 
 static void test_field(void)
@@ -24,20 +27,28 @@ static void test_field(void)
     assert(strcmp(buffer, "abd") == 0);
     assert(key(&field, NAV_KEY_HOME, 0) == NAV_UI_FIELD_MOVED && field.cursor == 0);
     assert(key(&field, NAV_KEY_END, 0) == NAV_UI_FIELD_MOVED && field.cursor == 3);
-    assert(key(&field, 'q', NAV_MOD_CTRL) == NAV_UI_FIELD_IGNORED);
+    assert(key(&field, 'q', NAV_MOD_CTRL) == NAV_UI_FIELD_CANCELLED);
     field.cursor = 3;
     field.offset = 0;
     nav_ui_field_ensure_visible(&field, 2);
     assert(field.offset == 2);
 }
 
+static int menu_motion(const NavTermEvent *event)
+{
+    NavKeymap map; NavInput input = {0};
+    nav_keymap_defaults(&map);
+    NavAction action = nav_input_resolve(&input, &map, NAV_CONTEXT_MENU, event);
+    return nav_ui_menu_major_motion(&action);
+}
+
 static void test_menu(void)
 {
     static const NavUiMenuItem items[] = {
-        {"One", 10, NULL, false, false, 'o', NULL},
-        {NULL, 0, NULL, true, true, 0, NULL},
-        {"Disabled", 20, NULL, true, false, 'd', NULL},
-        {"Three", 30, NULL, false, false, 't', NULL}};
+        {"One", 10, NULL, false, false, 'o'},
+        {NULL, 0, NULL, true, true, 0},
+        {"Disabled", 20, NULL, true, false, 'd'},
+        {"Three", 30, NULL, false, false, 't'}};
     NavUiMenu menu = {"Test", items, 4, 0};
     NavTermEvent event = {NAV_TERM_EVENT_KEY, NAV_KEY_RIGHT, NAV_MOD_CTRL, 0, 0};
     size_t selected = 99;
@@ -46,15 +57,15 @@ static void test_menu(void)
     assert(nav_ui_menu_move_minor(&menu, 0, -1) == 3);
     assert(nav_ui_menu_move_major(2, 3, 1) == 0);
     assert(nav_ui_menu_move_major(0, 3, -1) == 2);
-    assert(nav_ui_menu_major_motion(&event) == 1);
+    assert(menu_motion(&event) == 1);
     event.key = NAV_KEY_LEFT;
-    assert(nav_ui_menu_major_motion(&event) == -1);
+    assert(menu_motion(&event) == -1);
     event.modifiers = 0;
-    assert(nav_ui_menu_major_motion(&event) == -1);
+    assert(menu_motion(&event) == -1);
     event.key = NAV_KEY_RIGHT;
-    assert(nav_ui_menu_major_motion(&event) == 1);
+    assert(menu_motion(&event) == 1);
     event.modifiers = NAV_MOD_ALT;
-    assert(nav_ui_menu_major_motion(&event) == 0);
+    assert(menu_motion(&event) == 0);
     assert(nav_ui_menu_accelerator(&menu, 'T', &selected) == 30 && selected == 3);
     assert(nav_ui_menu_accelerator(&menu, 'd', &selected) == NAV_UI_MENU_CANCELLED);
     assert(nav_ui_menu_activate(&menu, 0) == 10);
@@ -97,15 +108,15 @@ static void test_bar_spacing(void)
 static void test_text_view(void)
 {
     NavUiTextView view = {0};
-    nav_ui_text_view_key(&view, NAV_KEY_PAGE_DOWN, 30, 10);
+    nav_ui_text_view_command(&view, NAV_CMD_PAGE_DOWN, 30, 10);
     assert(view.top == 10);
-    nav_ui_text_view_key(&view, NAV_KEY_END, 30, 10);
+    nav_ui_text_view_command(&view, NAV_CMD_END, 30, 10);
     assert(view.top == 20);
-    nav_ui_text_view_key(&view, NAV_KEY_DOWN, 30, 10);
+    nav_ui_text_view_command(&view, NAV_CMD_DOWN, 30, 10);
     assert(view.top == 20);
-    nav_ui_text_view_key(&view, NAV_KEY_PAGE_UP, 30, 10);
+    nav_ui_text_view_command(&view, NAV_CMD_PAGE_UP, 30, 10);
     assert(view.top == 10);
-    nav_ui_text_view_key(&view, NAV_KEY_HOME, 30, 10);
+    nav_ui_text_view_command(&view, NAV_CMD_HOME, 30, 10);
     assert(view.top == 0);
 }
 
