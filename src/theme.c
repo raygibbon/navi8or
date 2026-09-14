@@ -2,10 +2,12 @@
 #include "nav.h"
 #include "toml.h"
 #include <stdbool.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 typedef struct
 {
@@ -45,7 +47,8 @@ static const RoleSpec semantic_roles[] = {
     {"ui.viewer_search_match", NAV_STYLE_VIEWER_SEARCH_MATCH},
     {"ui.progress", NAV_STYLE_PROGRESS},
     {"ui.pane_title", NAV_STYLE_PANE_TITLE},
-    {"ui.pane_title_active", NAV_STYLE_PANE_TITLE_ACTIVE}
+    {"ui.pane_title_active", NAV_STYLE_PANE_TITLE_ACTIVE},
+    {"ui.file", NAV_STYLE_FILE}, {"ui.directory", NAV_STYLE_DIRECTORY}
 };
 
 /* The sole format-1 compatibility map. Rendering never consumes these names. */
@@ -75,15 +78,23 @@ static const RoleSpec legacy_roles[] = {
     {"navigator.pane_title_active", NAV_STYLE_PANE_TITLE_ACTIVE}
 };
 
+const char *nav_theme_role_name(NavStyle style)
+{
+    for (size_t i = 0; i < sizeof semantic_roles / sizeof *semantic_roles; i++)
+        if (semantic_roles[i].style == style) return semantic_roles[i].path;
+    return NULL;
+}
+
+const char *nav_theme_colour_name(unsigned index)
+{
+    static const char *names[] = {"black", "blue", "green", "cyan", "red", "magenta", "brown", "light_gray", "dark_gray", "light_blue", "light_green", "light_cyan", "light_red", "light_magenta", "yellow", "white"};
+    return index < 16 ? names[index] : "black";
+}
+
 static int colour(const char *name)
 {
-    static const char *names[] = {
-        "black", "blue", "green", "cyan", "red", "magenta", "brown",
-        "light_gray", "dark_gray", "light_blue", "light_green",
-        "light_cyan", "light_red", "light_magenta", "yellow", "white"
-    };
     for (int index = 0; index < 16; index++)
-        if (!strcasecmp(name, names[index]))
+        if (!strcasecmp(name, nav_theme_colour_name((unsigned)index)))
             return index;
     return -1;
 }
@@ -138,6 +149,8 @@ static const NavTheme *classic_theme(void)
         set_style(&theme, NAV_STYLE_PROGRESS, 0, 7);
         set_style(&theme, NAV_STYLE_PANE_TITLE, 0, 3);
         set_style(&theme, NAV_STYLE_PANE_TITLE_ACTIVE, 14, 3);
+        set_style(&theme, NAV_STYLE_FILE, 7, 1);
+        set_style(&theme, NAV_STYLE_DIRECTORY, 7, 1);
         theme.symbols = *nav_symbols_classic_dos();
         theme.frame_style = NAV_FRAME_COMBINE;
         theme.frame_space = true;
@@ -190,6 +203,8 @@ static const NavTheme *modern_theme(void)
         set_style(&theme, NAV_STYLE_PROGRESS, 0, 3);
         set_style(&theme, NAV_STYLE_PANE_TITLE, 7, 0);
         set_style(&theme, NAV_STYLE_PANE_TITLE_ACTIVE, 3, 0);
+        set_style(&theme, NAV_STYLE_FILE, 7, 0);
+        set_style(&theme, NAV_STYLE_DIRECTORY, 7, 0);
         theme.symbols.directory = 0x25b8;
         theme.symbols.parent = 0x2191;
         theme.symbols.selected = 0x203a;
@@ -203,6 +218,8 @@ static const NavTheme *modern_theme(void)
     }
     return &theme;
 }
+
+const NavTheme *nav_theme_default(void) { return modern_theme(); }
 
 const NavTheme *nav_theme_classic_dos(void)
 {
@@ -282,6 +299,8 @@ static void apply_v2_fallbacks(NavTheme *theme, bool *provided)
 {
     if (!provided[NAV_STYLE_TEXT] && provided[NAV_STYLE_BACKGROUND])
         inherit_role(theme, provided, NAV_STYLE_TEXT, NAV_STYLE_BACKGROUND);
+    inherit_role(theme, provided, NAV_STYLE_FILE, NAV_STYLE_TEXT);
+    inherit_role(theme, provided, NAV_STYLE_DIRECTORY, NAV_STYLE_TEXT);
     inherit_role(theme, provided, NAV_STYLE_BACKGROUND, NAV_STYLE_TEXT);
     inherit_role(theme, provided, NAV_STYLE_SURFACE, NAV_STYLE_BACKGROUND);
     inherit_role(theme, provided, NAV_STYLE_SURFACE_ALT, NAV_STYLE_SURFACE);
@@ -328,13 +347,14 @@ static int apply_frame(NavTheme *theme, const toml_table_t *root,
     toml_datum_t datum;
     if (!table)
         return 0;
-    if (toml_key_exists(table, "style"))
+    const char *style_key = !strcmp(path, "layout") ? "border_style" : "style";
+    if (toml_key_exists(table, style_key))
     {
         static const char *names[] = {
             "ascii", "single", "double", "combine", "combine_reverse", "block"
         };
         bool found = false;
-        datum = toml_string_in(table, "style");
+        datum = toml_string_in(table, style_key);
         if (!datum.ok)
         {
             snprintf(error, error_size, "%s.style must be a string", path);
@@ -431,14 +451,14 @@ static int apply_style_profile(NavTheme *theme, const toml_table_t *root,
     return 0;
 }
 
-static int parse_theme(FILE *file, const char *id, NavThemeResult *result)
+static int parse_theme(FILE *file, const char *id, const NavTheme *base, NavThemeResult *result)
 {
     char parse_error[256] = {0};
     bool provided[NAV_STYLE_COUNT] = {false};
     const toml_table_t *theme_info;
     const RoleSpec *roles;
     size_t role_count;
-    int format_number = 1;
+    int format_number = base ? 2 : 1;
     toml_table_t *root = toml_parse_file(file, parse_error, sizeof parse_error);
     if (!root)
     {
@@ -446,7 +466,9 @@ static int parse_theme(FILE *file, const char *id, NavThemeResult *result)
                  parse_error);
         return -1;
     }
-    theme_info = toml_table_in(root, "theme");
+    if (toml_table_in(root, "tdx")) format_number = 1;
+    theme_info = toml_table_in(root, "profile");
+    if (!theme_info) theme_info = toml_table_in(root, "theme");
     if (theme_info && toml_key_exists(theme_info, "format"))
     {
         toml_datum_t format = toml_int_in(theme_info, "format");
@@ -459,10 +481,12 @@ static int parse_theme(FILE *file, const char *id, NavThemeResult *result)
         }
         format_number = (int)format.u.i;
     }
-    result->theme = format_number == 1 ? *classic_theme() : *modern_theme();
+    result->theme = base ? *base : format_number == 1 ? *classic_theme() : *modern_theme();
     result->theme.format = format_number;
+    if (format_number == 1) result->theme.style = NAV_UI_STYLE_CLASSIC;
     snprintf(result->theme.name, sizeof result->theme.name, "%s", id);
-    if (theme_info && toml_key_exists(theme_info, "name"))
+    if (theme_info && toml_key_exists(theme_info, "name") &&
+        (!base || toml_table_in(root, "profile") || toml_key_exists(theme_info, "format")))
     {
         toml_datum_t name = toml_string_in(theme_info, "name");
         if (!name.ok)
@@ -501,13 +525,74 @@ static int parse_theme(FILE *file, const char *id, NavThemeResult *result)
             toml_free(root);
             return -1;
         }
-    apply_v2_fallbacks(&result->theme, provided);
+    /* Palette-only legacy loaders retain their established role inheritance.
+       Profiles overlay a resolved theme, preserving every omitted role. */
+    if (!base) apply_v2_fallbacks(&result->theme, provided);
+    for (size_t index = 0; index < sizeof semantic_roles / sizeof *semantic_roles; index++) {
+        char path[64];
+        snprintf(path, sizeof path, "colors.%s", semantic_roles[index].path + 3);
+        RoleSpec role = {path, semantic_roles[index].style};
+        if (apply_style(&result->theme, root, &role, provided, result->error, sizeof result->error)) {
+            toml_free(root); return -1;
+        }
+    }
+
     if (apply_frame(&result->theme, root,
                     result->theme.format == 1 ? "tdx.frame" : "ui.frame",
                     result->error, sizeof result->error))
     {
         toml_free(root);
         return -1;
+    }
+    const toml_table_t *colors = toml_table_in(root, "colors");
+    if (!colors && toml_key_exists(root, "colors")) { snprintf(result->error, sizeof result->error, "colors must be a table"); toml_free(root); return -1; }
+    if (colors) {
+        static const struct { const char *key; NavStyle role; bool background; } aliases[] = {
+            {"foreground", NAV_STYLE_TEXT, false}, {"background", NAV_STYLE_TEXT, true},
+            {"file", NAV_STYLE_FILE, false}, {"directory", NAV_STYLE_DIRECTORY, false},
+            {"border", NAV_STYLE_BORDER, false},
+            {"selected_fg", NAV_STYLE_SELECTION, false}, {"selected_bg", NAV_STYLE_SELECTION, true},
+            {"menu_fg", NAV_STYLE_MENU, false}, {"menu_bg", NAV_STYLE_MENU, true},
+            {"menu_selected_fg", NAV_STYLE_MENU_SELECTED, false}, {"menu_selected_bg", NAV_STYLE_MENU_SELECTED, true},
+            {"status_fg", NAV_STYLE_STATUS, false}, {"status_bg", NAV_STYLE_STATUS, true},
+            {"function_key_fg", NAV_STYLE_KEYBAR, false}, {"function_key_bg", NAV_STYLE_KEYBAR, true}
+        };
+        for (int i = 0; ; i++) {
+            const char *key = toml_key_in(colors, i); if (!key) break;
+            if (toml_table_in(colors, key)) {
+                bool known = false;
+                for (size_t j = 0; j < sizeof semantic_roles / sizeof *semantic_roles; j++)
+                    if (!strcmp(key, semantic_roles[j].path + 3)) known = true;
+                if (!known) { snprintf(result->error, sizeof result->error, "unknown colors role: %s", key); toml_free(root); return -1; }
+                const toml_table_t *role_table = toml_table_in(colors, key);
+                for (int k = 0; ; k++) {
+                    const char *field = toml_key_in(role_table, k); if (!field) break;
+                    if (strcmp(field, "foreground") && strcmp(field, "background")) {
+                        snprintf(result->error, sizeof result->error, "unsupported colors.%s.%s", key, field); toml_free(root); return -1;
+                    }
+                }
+                continue;
+            }
+            bool known = false;
+            for (size_t j = 0; j < sizeof aliases / sizeof *aliases; j++) if (!strcmp(key, aliases[j].key)) {
+                NavStyle role = aliases[j].role;
+                uint8_t *slot = aliases[j].background ? &result->theme.background[role] : &result->theme.foreground[role];
+                if (apply_colour(colors, key, slot, "colors", result->error, sizeof result->error)) { toml_free(root); return -1; }
+                provided[role] = true; known = true;
+                if (role == NAV_STYLE_TEXT) {
+                    uint8_t *background = aliases[j].background ? result->theme.background : result->theme.foreground;
+                    background[NAV_STYLE_BACKGROUND] = background[NAV_STYLE_SURFACE] = *slot;
+                }
+            }
+            if (!known) { snprintf(result->error, sizeof result->error, "unknown colors key: %s", key); toml_free(root); return -1; }
+        }
+    }
+    if (base && provided[NAV_STYLE_TEXT]) {
+        inherit_role(&result->theme, provided, NAV_STYLE_FILE, NAV_STYLE_TEXT);
+        inherit_role(&result->theme, provided, NAV_STYLE_DIRECTORY, NAV_STYLE_TEXT);
+    }
+    if (apply_frame(&result->theme, root, "layout", result->error, sizeof result->error)) {
+        toml_free(root); return -1;
     }
     {
         const toml_table_t *symbols = toml_table_in(root, "symbols");
@@ -550,10 +635,10 @@ int nav_theme_load_file(const char *path, const char *id, NavThemeResult *result
     file = nav_platform_fopen(path, "r");
     if (!file)
     {
-        snprintf(result->error, sizeof result->error, "theme file is unavailable");
+        snprintf(result->error, sizeof result->error, "cannot read %s: %s", path, strerror(errno));
         return -1;
     }
-    if (parse_theme(file, id, result))
+    if (parse_theme(file, id, NULL, result))
     {
         fclose(file);
         result->theme = *modern_theme();
@@ -563,6 +648,20 @@ int nav_theme_load_file(const char *path, const char *id, NavThemeResult *result
     fclose(file);
     result->fallback = false;
     return 0;
+}
+
+int nav_theme_overlay_file(const char *path, const NavTheme *base, NavThemeResult *result)
+{
+    memset(result, 0, sizeof *result);
+    snprintf(result->path, sizeof result->path, "%s", path);
+    FILE *file = nav_platform_fopen(path, "r");
+    if (!file) {
+        snprintf(result->error, sizeof result->error, "cannot read %s: %s", path, strerror(errno));
+        return -1;
+    }
+    int status = parse_theme(file, base->name, base, result);
+    fclose(file);
+    return status;
 }
 
 int nav_theme_load_result(const char *name, NavThemeResult *result)
@@ -581,6 +680,9 @@ int nav_theme_load_result(const char *name, NavThemeResult *result)
         snprintf(result->error, sizeof result->error,
                  "theme path is unavailable");
         return -1;
+    }
+    if (nav_platform_access(path, F_OK) != 0 && !strchr(name, '/') && !strchr(name, '\\')) {
+        snprintf(path, sizeof path, "themes/%s.toml", name);
     }
     return nav_theme_load_file(path, name, result);
 }

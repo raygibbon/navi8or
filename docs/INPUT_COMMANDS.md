@@ -57,7 +57,8 @@ pending prefixes where it is visible.
 
 Text insertion and menu mnemonic characters are `text.insert` payloads, not
 raw-key shortcuts. Existing text fields remain ASCII-only. Raw terminal decoding
-is confined to `terminal/termbox_input.c`; `ui/shell.c` alone polls terminal events; `ui/layout.c` synthesizes function-key
+is confined to `terminal/termbox_input.c`; the shared shell polls normal input; the key-capture and cancellable-transfer
+controls also poll through the terminal abstraction; `ui/layout.c` synthesizes function-key
 strokes only to render their bindings. No legacy
 screen-level key chain remains.
 
@@ -73,6 +74,7 @@ screen-level key chain remains.
 | Panels | Up/Down, Home/End, PgUp/PgDn | Selection and paging |
 | Panels | Left/Right | Column movement in Brief view |
 | Panels | Enter / Ctrl+PgDn | Open directory or view file |
+| Panels | Ctrl+L / Ctrl+N O | Enter URL / Location (Open or Download) |
 | Panels | Backspace / Alt+Up / Ctrl+PgUp | Parent directory |
 | Panels | Alt+Left / Alt+Right | History back/forward |
 | Panels | `/` | Filter |
@@ -126,9 +128,10 @@ Navi8or does not implement shell expansion itself.
 Without `-i`, existing automatic discovery and first-run defaults remain:
 `$XDG_CONFIG_HOME/nav/nav.toml` or `~/.config/nav/nav.toml` on POSIX,
 `%APPDATA%/Navi8or/nav.toml` on Windows. Reload preserves the running configuration
-if parsing fails. Open Configuration and Reload use the selected path.
-`repositories.toml` is loaded/saved beside the selected config; Vault storage and
-theme asset lookup keep their existing locations.
+if parsing fails. Open Configuration edits normal operational configuration; Reload also reapplies
+the explicit UI profile. `repositories.toml` stays beside normal configuration.
+Legacy full configuration files passed through `-i` retain their sidecar behavior;
+Vault storage retains its normal location.
 
 Existing TOML sections remain compatible. Optional `[app]` keys `theme`,
 `confirm_delete`, and `show_hidden` override their legacy equivalents.
@@ -156,3 +159,16 @@ shared-shell rows and dynamic shortcut labels. `make check` includes these and
 existing local/HTTP/Vault tests. `make resize-test` covers UI behavior and resize.
 Windows uses the same command/keymap code; no Proton-specific backend changes
 are part of this migration. Native Windows validation remains separate.
+
+## UI profiles
+
+`-i` now layers the exact UI profile over normal configuration instead of
+skipping normal discovery. Legacy full config files still work. Flat
+`[keys] copy = ["F5", "Ctrl+C"]` replaces the inherited bindings for that
+command; ambiguous explicit bindings are rejected. See
+[profile syntax and precedence](THEME_FORMAT.md).
+
+Preferences opens with `Ctrl+T P` or Options → Preferences. Its editor controls
+use the `preferences` command context; physical capture bypasses action dispatch
+so even keys currently assigned to actions can be rebound. Insert now has a
+logical backend key. See [live editing, saving and shortcut display](PROFILES.md).

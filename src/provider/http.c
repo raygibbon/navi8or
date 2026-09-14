@@ -957,8 +957,8 @@ multi_error:
     return -1;
 }
 
-static int http_read(NavProvider *provider, void *handle, void *buffer,
-                     size_t capacity, size_t *got, char *error,
+static int http_read_cancellable(NavProvider *provider, void *handle, void *buffer,
+                     size_t capacity, size_t *got, NavCancelFn cancel, void *data, char *error,
                      size_t error_size)
 {
     HttpRead *read = handle;
@@ -997,6 +997,9 @@ static int http_read(NavProvider *provider, void *handle, void *buffer,
         }
     }
     while (read->target_used < capacity && !read->complete) {
+        if (cancel && cancel(data)) {
+            snprintf(error, error_size, "Download cancelled"); read->failed = true; return -1;
+        }
         multi_code = curl_multi_perform(read->multi, &running);
         if (multi_code != CURLM_OK) {
             snprintf(error, error_size, "HTTP read failed: %s",
@@ -1011,7 +1014,7 @@ static int http_read(NavProvider *provider, void *handle, void *buffer,
         }
         if (read->target_used == capacity || read->paused || read->complete) break;
         if (running) {
-            multi_code = curl_multi_poll(read->multi, NULL, 0, 1000, NULL);
+            multi_code = curl_multi_poll(read->multi, NULL, 0, cancel ? 100 : 1000, NULL);
             if (multi_code != CURLM_OK) {
                 snprintf(error, error_size, "HTTP read failed: %s",
                          curl_multi_strerror(multi_code));
@@ -1054,6 +1057,13 @@ static int http_read(NavProvider *provider, void *handle, void *buffer,
     read->target = NULL;
     read->target_capacity = read->target_used = 0;
     return 0;
+}
+
+static int http_read(NavProvider *provider, void *handle, void *buffer,
+                     size_t capacity, size_t *got, char *error, size_t error_size)
+{
+    return http_read_cancellable(provider, handle, buffer, capacity, got, NULL,
+                                 NULL, error, error_size);
 }
 
 static int http_close_read(NavProvider *provider, void *handle, char *error,
@@ -1621,6 +1631,7 @@ static int http_stat(NavProvider *provider, const char *resource_id,
         return -1;
     }
     curl_easy_setopt(easy, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(easy, CURLOPT_FILETIME, 1L);
     code = curl_easy_perform(easy);
     curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
@@ -1644,6 +1655,15 @@ static int http_stat(NavProvider *provider, const char *resource_id,
     snprintf(entry->resource_id, sizeof entry->resource_id, "%s", resource_id);
     const char *leaf = strrchr(resource_id, '/');
     snprintf(entry->name, sizeof entry->name, "%s", leaf ? leaf + 1 : resource_id);
+    /* Autoindex servers commonly redirect /dir to /dir/. HEAD reveals that
+       directory intent without downloading a listing or guessing extensions. */
+    CURLU *effective_url = curl_url(); char *effective_path = NULL;
+    if (effective_url && !curl_url_set(effective_url, CURLUPART_URL, effective, 0) &&
+        !curl_url_get(effective_url, CURLUPART_PATH, &effective_path, 0)) {
+        size_t path_length = strlen(effective_path);
+        if (path_length && effective_path[path_length - 1] == '/') entry->flags |= NAV_ENTRY_DIR;
+    }
+    curl_free(effective_path); curl_url_cleanup(effective_url);
     if (length >= 0) {
         entry->size = (uint64_t)length;
         entry->flags |= NAV_ENTRY_SIZE_KNOWN;
@@ -1792,6 +1812,7 @@ NavProvider *nav_http_provider_create(const NavRepository *repository,
     http->provider.open_read = http_open_read;
     http->provider.open_write = repository->writable ? http_open_write : NULL;
     http->provider.read = http_read;
+    http->provider.read_cancellable = http_read_cancellable;
     http->provider.read_at = http_read_at;
     http->provider.write = repository->writable ? http_write : NULL;
     http->provider.write_started = repository->writable ? http_write_started : NULL;

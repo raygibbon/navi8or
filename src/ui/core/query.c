@@ -120,8 +120,11 @@ bool nav_ui_confirm(const char *question, NavUiRedrawFn redraw, void *data)
                                 &plain) == 0)
                 saved_valid = 1;
         }
-        snprintf(prompt, sizeof prompt, "%.*s (y/n): ", 490,
-                 question ? question : "");
+        char yes[80], no[80];
+        nav_ui_hint_key(NAV_CONTEXT_CONFIRM, NAV_CMD_ACCEPT, false, yes, sizeof yes);
+        nav_ui_hint_key(NAV_CONTEXT_CONFIRM, NAV_CMD_CANCEL, false, no, sizeof no);
+        if (nav_ui_show_dialog_keys()) snprintf(prompt, sizeof prompt, "%.*s (%s/%s): ", 320, question ? question : "", yes, no);
+        else snprintf(prompt, sizeof prompt, "%.*s: ", 490, question ? question : "");
         nav_ui_s_output(prompt, prompt_row(), 0, NAV_STYLE_MESSAGE, &plain);
         {
             int column = (int)strlen(prompt);

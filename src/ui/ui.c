@@ -1,6 +1,7 @@
 #include "nav.h"
 #include "nav_terminal.h"
 #include "nav_theme.h"
+#include "nav_profile.h"
 #include "nav_ui.h"
 #include "nav_ui_core.h"
 #include <assert.h>
@@ -25,6 +26,7 @@ static bool command_available(const NavApp *app, NavCommand command)
     const NavPane *destination = &app->panes[!app->active];
     const NavEntry *entry = nav_pane_selected(source);
     switch (command) {
+    case NAV_CMD_DOWNLOAD:
     case NAV_CMD_VIEW:
         return entry && !(entry->flags & NAV_ENTRY_DIR) &&
                nav_provider_supports(source->provider, NAV_CAP_READ);
@@ -125,19 +127,19 @@ static void draw_pane_location(const NavPane *pane, int x, int y, int width)
     nav_ui_text(x + (width > 2 ? 1 : 0), y, available, line, NAV_STYLE_PATH);
 }
 
-static void draw_pane_columns(const NavPane *pane, int x, int y, int width)
+static void draw_pane_columns(const NavPane *pane, int x, int y, int width, const NavConfig *config)
 {
     char row[NAV_PATH_MAX];
     int text_width = width > 2 ? width - 2 : 1;
     if (text_width >= (int)sizeof row) text_width = (int)sizeof row - 1;
-    nav_format_panel_header(pane->view, pane->sort_mode, width, row, sizeof row);
+    nav_format_panel_header_for_config(pane->view, pane->sort_mode, width, row, sizeof row, config);
     nav_ui_text(x, y, width, "", NAV_STYLE_COLUMN_HEADER);
     nav_ui_text(x + (width > 2 ? 1 : 0), y, text_width, row,
                 NAV_STYLE_COLUMN_HEADER);
 }
 
 static void draw_pane_body(NavPane *pane, int x, int width, int body_top,
-                           int body_height, bool active)
+                           int body_height, bool active, const NavConfig *config)
 {
     char row[NAV_PATH_MAX];
     const NavSymbols *symbols = nav_symbols_active();
@@ -168,13 +170,13 @@ static void draw_pane_body(NavPane *pane, int x, int width, int body_top,
         char display[NAV_NAME_MAX + 2];
         nav_entry_format_display_name(entry, display, sizeof display);
         if (pane->view == NAV_PANEL_FULL)
-            nav_format_entry_full(entry, column_width, row, sizeof row);
+            nav_format_entry_full_for_config(entry, column_width, row, sizeof row, config);
         else
             snprintf(row, sizeof row, "%-*.*s", text_width, text_width, display);
         NavStyle row_style = visible - 1 == pane->selected
                                  ? (active ? NAV_STYLE_SELECTION
                                            : NAV_STYLE_SELECTION_INACTIVE)
-                                 : NAV_STYLE_TEXT;
+                                 : entry->flags & NAV_ENTRY_DIR ? NAV_STYLE_DIRECTORY : NAV_STYLE_FILE;
         nav_term_glyph(item_x, body_top + row_number, entry->flags & NAV_ENTRY_PARENT ? symbols->parent : entry->flags & NAV_ENTRY_DIR ? symbols->directory : ' ',
                        row_style);
         nav_ui_text(item_x + 1, body_top + row_number, text_width, row, row_style);
@@ -268,12 +270,12 @@ static void draw_app(void *data)
     const NavTheme *theme = nav_term_theme();
     NavUiStyle profile = theme ? theme->style : NAV_UI_STYLE_MODERN;
     nav_term_clear(NAV_STYLE_BACKGROUND);
-    if (!nav_commander_layout_for_style(width, height, profile, &layout))
+    if (!nav_commander_layout_for_config(width, height, profile, &app->config, &layout))
     {
         nav_ui_text(0, 0, width, "Terminal too small", NAV_STYLE_MENU);
         return;
     }
-    draw_commander_menu_bar();
+    if (app->config.show_menu) draw_commander_menu_bar();
     draw_pane_title(&app->panes[0], layout.pane_x[0], layout.pane_title_row,
                     layout.pane_width[0], 'L', app->active == 0, profile);
     draw_pane_title(&app->panes[1], layout.pane_x[1], layout.pane_title_row,
@@ -283,9 +285,9 @@ static void draw_app(void *data)
     draw_pane_location(&app->panes[1], layout.pane_x[1], layout.pane_location_row,
                        layout.pane_width[1]);
     draw_pane_columns(&app->panes[0], layout.pane_x[0],
-                      layout.pane_column_header_row, layout.pane_width[0]);
+                      layout.pane_column_header_row, layout.pane_width[0], &app->config);
     draw_pane_columns(&app->panes[1], layout.pane_x[1],
-                      layout.pane_column_header_row, layout.pane_width[1]);
+                      layout.pane_column_header_row, layout.pane_width[1], &app->config);
     if (layout.pane_column_separator_row >= 0) {
         nav_term_hline(layout.pane_x[0], layout.pane_column_separator_row, 0xc4,
                        layout.pane_width[0], app->active == 0 ? NAV_STYLE_BORDER_ACTIVE
@@ -295,9 +297,9 @@ static void draw_app(void *data)
                                                              : NAV_STYLE_BORDER);
     }
     draw_pane_body(&app->panes[0], layout.pane_x[0], layout.pane_width[0],
-                   layout.body_top, layout.body_height, app->active == 0);
+                   layout.body_top, layout.body_height, app->active == 0, &app->config);
     draw_pane_body(&app->panes[1], layout.pane_x[1], layout.pane_width[1],
-                   layout.body_top, layout.body_height, app->active == 1);
+                   layout.body_top, layout.body_height, app->active == 1, &app->config);
     draw_pane_summary(&app->panes[0], layout.pane_x[0], layout.summary_row,
                       layout.pane_width[0], app->active == 0, profile);
     draw_pane_summary(&app->panes[1], layout.pane_x[1], layout.summary_row,
@@ -305,8 +307,8 @@ static void draw_app(void *data)
     nav_term_vline(layout.divider, layout.pane_title_row, 0xb3,
                    layout.summary_row - layout.pane_title_row + 1,
                    NAV_STYLE_BORDER);
-    draw_global_status(app, &layout, profile);
-    draw_function_key_bar(app, &layout);
+    if (app->config.show_status) draw_global_status(app, &layout, profile);
+    if (app->config.show_function_bar) draw_function_key_bar(app, &layout);
     nav_term_hide_cursor();
 }
 
@@ -614,17 +616,53 @@ static void command_filter(NavApp *app)
     nav_pane_ensure_visible(pane);
 }
 
+static void command_vault(NavApp *app);
+
 static void command_open_location(NavApp *app)
 {
     NavPane *pane = &app->panes[app->active];
     char location[NAV_PATH_MAX], error[256] = {0};
-    snprintf(location, sizeof location, "%s", pane->location.display_path);
-    if (nav_ui_prompt_text(" Open Location ", "Location: ", location,
-                        sizeof location, draw_app, app) || !location[0])
-        return;
-    NavProvider *provider = nav_provider_for_location(pane->provider, location,
-                                                      error, sizeof error);
+    snprintf(location, sizeof location, "%s", !strcmp(pane->provider->scheme, "local") ? pane->location.display_path : pane->location.resource_id);
+    int action = nav_ui_location_prompt(location, sizeof location, draw_app, app);
+    if (action < 0 || !location[0]) return;
+    NavEntry resource; bool directory = true, owned = false;
+    NavProvider *provider = nav_location_resolve(app, location, &resource, &directory,
+                                                &owned, error, sizeof error);
     if (!provider) { set_error(app, error); return; }
+    if (owned && !strcmp(provider->scheme, "http") && !directory) {
+        NavEntry metadata;
+        int probe = provider->stat(provider, resource.resource_id, &metadata, error, sizeof error);
+        if (probe && app->credential_store && nav_credential_store_is_locked(app->credential_store)) {
+            if (nav_ui_confirm("Open Vault to unlock HTTP credentials?", draw_app, app)) {
+                command_vault(app);
+                probe = provider->stat(provider, resource.resource_id, &metadata, error, sizeof error);
+            }
+        }
+        if (probe && (strstr(error, "401") || strstr(error, "403") || strstr(error, "locked"))) {
+            set_error(app, error); nav_provider_destroy(provider); return;
+        }
+        if (!probe) {
+            resource.size = metadata.size; resource.modified = metadata.modified;
+            resource.flags = metadata.flags; directory = (metadata.flags & NAV_ENTRY_DIR) != 0;
+        }
+    }
+    if (owned && resource.resource_id[0] && directory)
+        snprintf(location, sizeof location, "%s", resource.resource_id);
+    NavLocation origin = pane->location;
+    if (action == 1 || !directory) {
+        if (!resource.resource_id[0]) {
+            NavLocation resolved;
+            if (provider->location(provider, location, &resolved, error, sizeof error) ||
+                provider->stat(provider, resolved.resource_id, &resource, error, sizeof error)) {
+                set_error(app, error); if (owned) nav_provider_destroy(provider); return;
+            }
+        }
+        if (action == 1) nav_ui_download(provider, &resource, &origin, &app->config, draw_app, app);
+        else nav_view_file_from(provider, &resource, &app->config, &origin);
+        if (owned) nav_provider_destroy(provider);
+        refresh_pane(app, pane);
+        return;
+    }
     if (pane->provider != provider) {
         NavPane replacement = *pane;
         NavProvider *old_provider = pane->provider;
@@ -637,6 +675,7 @@ static void command_open_location(NavApp *app)
                           app->config.history_enabled, error, sizeof error)) {
             nav_listing_free(&replacement.listing);
             set_error(app, error[0] ? error : "Unable to open location");
+            if (owned) nav_provider_destroy(provider);
             return;
         }
         nav_pane_sort(&replacement, replacement.sort_mode);
@@ -843,7 +882,7 @@ static void draw_vault(void *data)
     if (screen->inline_repository) { draw_app(screen->app); return; }
     int width = nav_term_width(), height = nav_term_height();
     nav_term_clear(NAV_STYLE_BACKGROUND);
-    draw_commander_menu_bar();
+    if (screen->app->config.show_menu) draw_commander_menu_bar();
     if (width < 20 || height < 6) {
         nav_ui_text(0, 1, width, "Vault", NAV_STYLE_DIALOG_TITLE);
         nav_ui_text(0, 2, width, "Terminal too small", NAV_STYLE_WARNING);
@@ -852,10 +891,14 @@ static void draw_vault(void *data)
     nav_ui_box(1, 1, width - 2, height - 2, " Credential Vault ", NAV_STYLE_DIALOG);
     if (!screen->exists) {
         nav_ui_text(3, 3, width - 6, "No vault yet", NAV_STYLE_TEXT_DIM);
-        nav_ui_text(3, 5, width - 6, "F7 Create Vault    F10 Close", NAV_STYLE_DIALOG);
+        const NavCommand commands[] = {NAV_CMD_VAULT_NEW, NAV_CMD_CANCEL}; const char *labels[] = {"Create Vault", "Close"};
+        char hints[256]; nav_ui_hints(NAV_CONTEXT_VAULT, commands, labels, 2, hints, sizeof hints);
+        nav_ui_text(3, 5, width - 6, hints, NAV_STYLE_DIALOG);
     } else if (nav_credential_store_is_locked(store)) {
         nav_ui_text(3, 3, width - 6, "Vault locked", NAV_STYLE_WARNING);
-        nav_ui_text(3, 5, width - 6, "Enter/U Unlock    F10 Close", NAV_STYLE_DIALOG);
+        const NavCommand commands[] = {NAV_CMD_VAULT_UNLOCK, NAV_CMD_CANCEL}; const char *labels[] = {"Unlock", "Close"};
+        char hints[256]; nav_ui_hints(NAV_CONTEXT_VAULT, commands, labels, 2, hints, sizeof hints);
+        nav_ui_text(3, 5, width - 6, hints, NAV_STYLE_DIALOG);
     } else {
         size_t count = nav_credential_store_count(store);
         nav_ui_text(3, 3, width - 6, "Name                         Type     Username", NAV_STYLE_TEXT_DIM);
@@ -870,9 +913,10 @@ static void draw_vault(void *data)
             nav_ui_text(3, 5 + (int)i, width - 6, line,
                         (int)i == screen->selected ? NAV_STYLE_SELECTION : NAV_STYLE_DIALOG);
         }
-        nav_ui_text(3, height - 3, width - 6,
-                    "F4 Edit   F7 New   F8 Delete   L Lock   F10 Close",
-                    NAV_STYLE_DIALOG);
+        const NavCommand commands[] = {NAV_CMD_VAULT_EDIT, NAV_CMD_VAULT_NEW, NAV_CMD_VAULT_DELETE, NAV_CMD_VAULT_LOCK, NAV_CMD_CANCEL};
+        const char *labels[] = {"Edit", "New", "Delete", "Lock", "Close"};
+        char hints[256]; nav_ui_hints(NAV_CONTEXT_VAULT, commands, labels, 5, hints, sizeof hints);
+        nav_ui_text(3, height - 3, width - 6, hints, NAV_STYLE_DIALOG);
     }
     if (screen->app->status[0])
         nav_ui_text(3, height - 4, width - 6, screen->app->status,
@@ -953,7 +997,10 @@ static int credential_choose(NavApp *app, const char *title,
                         i == selected ? NAV_STYLE_SELECTION : NAV_STYLE_DIALOG);
         nav_ui_text(2, height - 4, width - 4, app->status,
                     app->status_kind == NAV_MESSAGE_ERROR ? NAV_STYLE_ERROR : NAV_STYLE_TEXT_DIM);
-        nav_ui_text(2, height - 3, width - 4, "Up/Down  Enter select  Esc back", NAV_STYLE_TEXT_DIM);
+        const NavCommand commands[] = {NAV_CMD_UP, NAV_CMD_DOWN, NAV_CMD_ACCEPT, NAV_CMD_CANCEL};
+        const char *labels[] = {"Up", "Down", "Select", "Back"}; char hints[256];
+        nav_ui_hints(NAV_CONTEXT_PICKER, commands, labels, 4, hints, sizeof hints);
+        nav_ui_text(2, height - 3, width - 4, hints, NAV_STYLE_TEXT_DIM);
         nav_term_hide_cursor(); nav_term_present();
         if (nav_ui_input(NAV_CONTEXT_PICKER, &event) <= 0) continue;
         if (event.type != NAV_TERM_EVENT_KEY) continue;
@@ -1180,7 +1227,7 @@ static void command_edit(NavApp *app)
     nav_term_shutdown();
     if (nav_platform_launch_editor(&editor, entry->resource_id, error, sizeof error))
         set_error(app, error);
-    nav_term_set_theme(nav_theme_load(app->config.theme_name));
+    nav_term_set_theme(&app->config.profile);
     if (nav_term_init() < 0)
     {
         set_error(app, "Unable to resume terminal");
@@ -1200,28 +1247,65 @@ static void command_open_config(NavApp *app)
     nav_term_shutdown();
     if (nav_platform_launch_editor(&editor, path, error, sizeof error))
         set_error(app, error);
-    nav_term_set_theme(nav_theme_load(app->config.theme_name));
+    nav_term_set_theme(&app->config.profile);
     if (nav_term_init() < 0)
         app->running = false;
 }
 
+static bool profile_ui_initialized;
+static NavPanelView profile_view;
+static NavSortMode profile_sort;
+static bool profile_hidden, profile_dirs_first, profile_case_sensitive;
+
+void nav_ui_profile_apply(NavApp *app)
+{
+    bool hidden_changed = !profile_ui_initialized || profile_hidden != app->config.show_hidden;
+    nav_ui_input_configure(&app->config);
+    nav_term_set_theme(&app->config.profile);
+    if (hidden_changed) app->show_hidden = app->config.show_hidden;
+    for (int i = 0; i < 2; i++) {
+        bool resort = !profile_ui_initialized || profile_sort != app->config.sort ||
+                      profile_dirs_first != app->config.directories_first || profile_case_sensitive != app->config.case_sensitive_sort;
+        if (!profile_ui_initialized || profile_view != app->config.panel_view) app->panes[i].view = app->config.panel_view;
+        if (!profile_ui_initialized || profile_dirs_first != app->config.directories_first) app->panes[i].directories_first = app->config.directories_first;
+        if (!profile_ui_initialized || profile_case_sensitive != app->config.case_sensitive_sort) app->panes[i].case_sensitive_sort = app->config.case_sensitive_sort;
+        if (hidden_changed && profile_ui_initialized) refresh_pane(app, &app->panes[i]);
+        if (resort) nav_pane_sort(&app->panes[i], app->config.sort);
+        nav_pane_clamp_selection(&app->panes[i]); nav_pane_ensure_visible(&app->panes[i]);
+    }
+    profile_view = app->config.panel_view; profile_sort = app->config.sort;
+    profile_hidden = app->config.show_hidden; profile_dirs_first = app->config.directories_first;
+    profile_case_sensitive = app->config.case_sensitive_sort; profile_ui_initialized = true;
+}
+
+void nav_ui_profile_restore_panes(NavApp *app, const NavProfileSession *session)
+{
+    bool hidden_changed = app->show_hidden != session->hidden; app->show_hidden = session->hidden;
+    for (int i = 0; i < 2; i++) {
+        app->panes[i].view = session->views[i]; app->panes[i].directories_first = session->directories_first[i];
+        app->panes[i].case_sensitive_sort = session->case_sensitive[i];
+        if (hidden_changed) refresh_pane(app, &app->panes[i]);
+        nav_pane_sort(&app->panes[i], session->sorts[i]);
+        nav_pane_clamp_selection(&app->panes[i]); nav_pane_ensure_visible(&app->panes[i]);
+    }
+}
+
 static void command_reload_config(NavApp *app)
 {
+    if (app->profile_dirty && !nav_ui_confirm("Discard unsaved profile changes and reload?", draw_app, app)) return;
     NavConfig candidate;
     NavThemeResult theme_result;
     static NavTheme running_theme;
     char error[256] = {0};
-    if (nav_config_load_file(&candidate, app->config.explicit_config ? app->config.config_path : NULL, error, sizeof error))
+    if (nav_config_load_file(&candidate, app->config.explicit_config ? app->config.profile_path : NULL, error, sizeof error))
     {
         set_error(app, error[0] ? error : "Configuration reload failed");
         return;
     }
-    if (nav_theme_load_result(candidate.theme_name, &theme_result))
-    {
-        set_error(app, theme_result.error[0] ? theme_result.error : "Theme reload failed");
-        return;
-    }
+    theme_result.theme = candidate.profile;
     app->config = candidate;
+    nav_profile_mark_saved(app);
+    profile_ui_initialized = false; nav_ui_profile_apply(app);
     nav_ui_input_configure(&app->config);
     app->show_hidden = candidate.show_hidden;
     running_theme = theme_result.theme;
@@ -1243,8 +1327,13 @@ static void command_theme_info(NavApp *app)
     char name[128], id[128], style[64], source[512], reason[320];
     NavThemeResult result;
     nav_theme_load_result(app->config.theme_name, &result);
+    result.theme = app->config.profile;
+    if (app->config.profile_path[0]) { result.fallback = false;
+        snprintf(result.path, sizeof result.path, "%s", app->config.profile_path);
+    }
     snprintf(name, sizeof name, "Theme: %s", result.theme.display_name);
-    snprintf(id, sizeof id, "ID: %s", app->config.theme_name);
+    snprintf(id, sizeof id, "Identity: %s", app->config.profile_path[0] ?
+             nav_profile_is_template(app->config.profile_path) ? "bundled template" : "user profile" : "normal configuration");
     snprintf(style, sizeof style, "Style: %s",
              result.theme.style == NAV_UI_STYLE_CLASSIC ? "Classic" : "Modern");
     snprintf(source, sizeof source, "Source: %.*s", (int)sizeof source - 9, result.path);
@@ -1301,6 +1390,15 @@ static void dispatch(NavApp *app, NavCommand command)
     case NAV_CMD_OPEN_LOCATION:
         command_open_location(app);
         break;
+    case NAV_CMD_DOWNLOAD: {
+        const NavEntry *entry = nav_pane_selected(pane);
+        if (entry && !(entry->flags & NAV_ENTRY_DIR)) {
+            NavLocation origin = pane->location;
+            nav_ui_download(pane->provider, entry, &origin, &app->config, draw_app, app);
+            refresh_pane(app, pane);
+        }
+        break;
+    }
     case NAV_CMD_VIEW:
     {
         const NavEntry *entry = nav_pane_selected(pane);
@@ -1309,7 +1407,7 @@ static void dispatch(NavApp *app, NavCommand command)
             assert(app->mode == NAV_MODE_COMMANDER);
             app->previous_mode = app->mode;
             app->mode = NAV_MODE_VIEWER;
-            nav_view_file(pane->provider, entry, &app->config);
+            nav_view_file_from(pane->provider, entry, &app->config, &pane->location);
             app->mode = app->previous_mode;
         }
         break;
@@ -1336,8 +1434,11 @@ static void dispatch(NavApp *app, NavCommand command)
     case NAV_CMD_MKDIR:
         command_mkdir(app);
         break;
+    case NAV_CMD_PREFERENCES: nav_ui_preferences(app, draw_app, app); break;
+    case NAV_CMD_PROFILE_SAVE: nav_ui_profile_save(app, false, draw_app, app); break;
+    case NAV_CMD_PROFILE_SAVE_AS: nav_ui_profile_save(app, true, draw_app, app); break;
     case NAV_CMD_QUIT:
-        app->running = false;
+        if (!app->profile_dirty || nav_ui_confirm("Discard unsaved profile changes and quit?", draw_app, app)) app->running = false;
         break;
     case NAV_CMD_REFRESH:
         refresh_pane(app, pane);
@@ -1408,7 +1509,7 @@ static void dispatch(NavApp *app, NavCommand command)
 #define ITEM(label, command, key) {label, command, NULL, false, false, key}
 #define DISABLED(label, key) {label, NAV_CMD_NONE, NULL, true, false, key}
 #define SEPARATOR {NULL, NAV_CMD_NONE, NULL, true, true, 0}
-static const NavUiMenuItem file_items[] = {ITEM("Open Location", NAV_CMD_OPEN_LOCATION, 'o'), ITEM("Properties", NAV_CMD_PROPERTIES, 'p'), SEPARATOR, ITEM("Open Configuration", NAV_CMD_OPEN_CONFIG, 'c'), ITEM("Reload Configuration", NAV_CMD_RELOAD_CONFIG, 'r'), ITEM("Current Theme", NAV_CMD_THEME_INFO, 't'), SEPARATOR, ITEM("Quit", NAV_CMD_QUIT, 'q')};
+static const NavUiMenuItem file_items[] = {ITEM("Enter URL / Location...", NAV_CMD_OPEN_LOCATION, 'o'), ITEM("Properties", NAV_CMD_PROPERTIES, 'p'), SEPARATOR, ITEM("Open Configuration", NAV_CMD_OPEN_CONFIG, 'c'), ITEM("Reload Configuration", NAV_CMD_RELOAD_CONFIG, 'r'), ITEM("Current Theme", NAV_CMD_THEME_INFO, 't'), SEPARATOR, ITEM("Quit", NAV_CMD_QUIT, 'q')};
 static const NavUiMenuItem view_items[] = {ITEM("Refresh", NAV_CMD_REFRESH, 'r'), ITEM("Show Hidden", NAV_CMD_HIDDEN, 'h'), SEPARATOR, ITEM("Brief", NAV_CMD_PANEL_BRIEF, 'b'), ITEM("Full", NAV_CMD_PANEL_FULL, 'f'), SEPARATOR, ITEM("Sort By Name", NAV_CMD_SORT_NAME, 'n'), ITEM("Sort By Size", NAV_CMD_SORT_SIZE, 's'), ITEM("Sort By Date", NAV_CMD_SORT_DATE, 'd')};
 static NavUiMenuItem command_items[] = {ITEM("View", NAV_CMD_VIEW, 'v'), ITEM("Edit", NAV_CMD_EDIT, 'e'), ITEM("Copy", NAV_CMD_COPY, 'c'), ITEM("Move/Rename", NAV_CMD_MOVE, 'm'), ITEM("Make Directory", NAV_CMD_MKDIR, 'a'), ITEM("Delete", NAV_CMD_DELETE, 'd'), SEPARATOR, ITEM("Filter", NAV_CMD_FILTER, 'f')};
 static const NavUiMenuItem repository_items[] = {
@@ -1420,7 +1521,8 @@ static const NavUiMenuItem repository_items[] = {
     ITEM("Credential Vault", NAV_CMD_VAULT, 'v')
 };
 static const NavUiMenuItem help_items[] = {ITEM("Keys", NAV_CMD_HELP, 'k'), ITEM("About Navi8or", NAV_CMD_ABOUT, 'a')};
-static NavUiMenu menus[] = {{"File", file_items, sizeof file_items / sizeof *file_items, 0}, {"View", view_items, sizeof view_items / sizeof *view_items, 0}, {"Command", command_items, sizeof command_items / sizeof *command_items, 0}, {"Repositories", repository_items, sizeof repository_items / sizeof *repository_items, 0}, {"Help", help_items, sizeof help_items / sizeof *help_items, 0}};
+static const NavUiMenuItem options_items[] = {ITEM("Preferences", NAV_CMD_PREFERENCES, 'p'), ITEM("Save Profile", NAV_CMD_PROFILE_SAVE, 's'), ITEM("Save Profile As", NAV_CMD_PROFILE_SAVE_AS, 'a')};
+static NavUiMenu menus[] = {{"File", file_items, sizeof file_items / sizeof *file_items, 0}, {"View", view_items, sizeof view_items / sizeof *view_items, 0}, {"Command", command_items, sizeof command_items / sizeof *command_items, 0}, {"Repositories", repository_items, sizeof repository_items / sizeof *repository_items, 0}, {"Options", options_items, sizeof options_items / sizeof *options_items, 0}, {"Help", help_items, sizeof help_items / sizeof *help_items, 0}};
 static void draw_commander_menu_bar(void)
 {
     nav_ui_draw_menu_bar(menus, sizeof menus / sizeof *menus);
@@ -1489,8 +1591,9 @@ int nav_ui_run(NavApp *app)
     /* Ctrl+\\ is Navi8or's TDX-derived menu key, not a process-quit request. */
     nav_ui_input_configure(&app->config);
     nav_ui_workspace(NAV_CONTEXT_PANEL);
+    profile_ui_initialized = false; nav_ui_profile_apply(app);
     nav_platform_console_signals();
-    nav_term_set_theme(nav_theme_load(app->config.theme_name));
+    nav_term_set_theme(&app->config.profile);
     if (nav_term_init() < 0)
     {
         fprintf(stderr, "nav: terminal initialization failed\n");
@@ -1498,8 +1601,12 @@ int nav_ui_run(NavApp *app)
     }
     set_status(app, "Ready");
     app->mode = NAV_MODE_COMMANDER;
-    while (app->running && !nav_ui_quit_requested())
+    while (app->running)
     {
+        if (nav_ui_quit_requested()) {
+            if (!app->profile_dirty || nav_ui_confirm("Discard unsaved profile changes and quit?", draw_app, app)) break;
+            nav_ui_input_configure(&app->config);
+        }
         NavAction event;
         NavPane *pane = &app->panes[app->active];
         present_app(app);
@@ -1521,5 +1628,6 @@ int nav_ui_run(NavApp *app)
         nav_pane_ensure_visible(pane);
     }
     nav_term_shutdown();
+    free(app->profile_saved); app->profile_saved = NULL;
     return 0;
 }

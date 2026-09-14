@@ -3476,7 +3476,7 @@ static int wait_event(struct tb_event *event, int timeout) {
 
     do {
         int pending_alt_escape =
-            timeout < 0 && (global.input_mode & TB_INPUT_ALT) &&
+            timeout != 0 && (global.input_mode & TB_INPUT_ALT) &&
             global.in.len == 1 && global.in.buf[0] == '\x1b';
 
         FD_ZERO(&fds);

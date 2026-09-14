@@ -228,6 +228,18 @@ void nav_panel_full_layout(int width, NavPanelFullLayout *layout)
     }
     if (layout->name_width < 1) layout->name_width = 1;
 }
+static void full_layout_for_config(int width, NavPanelFullLayout *layout, const NavConfig *config)
+{
+    nav_panel_full_layout(width, layout);
+    if (!config) return;
+    int usable = width > 2 ? width - 2 : 1;
+    layout->show_size = config->pane_show_size && usable >= 28;
+    layout->show_modified = config->pane_show_modified && usable >= (layout->show_size ? 54 : 38);
+    int end = usable;
+    if (layout->show_modified) { layout->modified_width = 16; layout->modified_column = end - 16; end -= 18; }
+    if (layout->show_size) { layout->size_width = 12; layout->size_column = end - 12; end -= 14; }
+    layout->name_width = end > 0 ? end : 1;
+}
 static void put_header_label(char *row, int row_width, int column,
                              int field_width, const char *label,
                              bool align_right)
@@ -247,15 +259,15 @@ static void put_header_label(char *row, int row_width, int column,
     }
     if (amount > 0) memcpy(row + destination, label + source, (size_t)amount);
 }
-void nav_format_panel_header(NavPanelView view, NavSortMode sort, int width,
-                             char *output, size_t capacity)
+void nav_format_panel_header_for_config(NavPanelView view, NavSortMode sort, int width,
+                             char *output, size_t capacity, const NavConfig *config)
 {
     NavPanelFullLayout layout;
     int text_width = width > 2 ? width - 2 : 1;
     if (!output || capacity == 0) return;
     if (text_width >= (int)capacity) text_width = (int)capacity - 1;
     if (text_width < 0) text_width = 0;
-    nav_panel_full_layout(width, &layout);
+    full_layout_for_config(width, &layout, config);
     memset(output, ' ', (size_t)text_width);
     output[text_width] = 0;
     if (text_width == 0) return;
@@ -272,8 +284,8 @@ void nav_format_panel_header(NavPanelView view, NavSortMode sort, int width,
                          sort == NAV_SORT_DATE ? "Modified ^" : "Modified",
                          false);
 }
-void nav_format_entry_full(const NavEntry *entry, int width, char *output,
-                           size_t capacity)
+void nav_format_entry_full_for_config(const NavEntry *entry, int width, char *output,
+                           size_t capacity, const NavConfig *config)
 {
     NavPanelFullLayout layout;
     char display[NAV_NAME_MAX + 2], size[32] = "-", modified[32] = "-";
@@ -281,7 +293,7 @@ void nav_format_entry_full(const NavEntry *entry, int width, char *output,
     if (!output || capacity == 0) return;
     if (text_width >= (int)capacity) text_width = (int)capacity - 1;
     if (text_width < 0) text_width = 0;
-    nav_panel_full_layout(width, &layout);
+    full_layout_for_config(width, &layout, config);
     memset(output, ' ', (size_t)text_width);
     output[text_width] = 0;
     if (!entry || text_width == 0) return;
@@ -292,7 +304,10 @@ void nav_format_entry_full(const NavEntry *entry, int width, char *output,
         int end = layout.size_column + layout.size_width;
         int length, start;
         if (entry->flags & NAV_ENTRY_DIR) snprintf(size, sizeof size, "<DIR>");
-        else if (entry->flags & NAV_ENTRY_SIZE_KNOWN) nav_format_size(entry->size, size, sizeof size);
+        else if (entry->flags & NAV_ENTRY_SIZE_KNOWN) {
+            if (config && config->size_bytes) snprintf(size, sizeof size, "%llu", (unsigned long long)entry->size);
+            else nav_format_size(entry->size, size, sizeof size);
+        }
         if (end > text_width) end = text_width;
         length = (int)strlen(size);
         if (length > end - layout.size_column) length = end - layout.size_column;
@@ -304,7 +319,7 @@ void nav_format_entry_full(const NavEntry *entry, int width, char *output,
         if (entry->flags & NAV_ENTRY_MODIFIED_KNOWN) {
             struct tm value;
             nav_platform_localtime(&entry->modified, &value);
-            strftime(modified, sizeof modified, "%Y-%m-%d %H:%M", &value);
+            strftime(modified, sizeof modified, config ? config->date_format : "%Y-%m-%d %H:%M", &value);
         }
         amount = (int)strlen(modified);
         if (amount > layout.modified_width) amount = layout.modified_width;
@@ -380,3 +395,8 @@ void nav_pane_sort(NavPane *p, NavSortMode mode)
     }
     nav_pane_clamp_selection(p);
 }
+
+void nav_format_panel_header(NavPanelView view, NavSortMode sort, int width, char *out, size_t size)
+{ nav_format_panel_header_for_config(view, sort, width, out, size, NULL); }
+void nav_format_entry_full(const NavEntry *entry, int width, char *out, size_t size)
+{ nav_format_entry_full_for_config(entry, width, out, size, NULL); }

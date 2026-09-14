@@ -19,16 +19,20 @@ def main():
         left.mkdir(); right.mkdir()
         (left / "sample.txt").write_text("command-driven viewer\n")
         config = root / "custom.toml"
-        config.write_text('[keys.global]\n"F12" = "app.quit"\n[keys.panel]\n"F5" = "file.view"\n')
+        config.write_text('[keys.global]\n"F12" = "app.quit"\n[keys.panel]\n"F5" = "file.view"\n[keys.viewer]\n"F5" = "search.previous"\n"F6" = "search.next"\n')
         automatic = root / "automatic"
         environment = dict(os.environ, XDG_CONFIG_HOME=str(automatic), TERM="xterm-256color")
-        for args in (["-i"], ["-i", "missing.toml"], ["--unknown"]):
+        malformed = root / "malformed.toml"
+        malformed.write_text("[profile\n")
+        for args in (["-i"], ["-i", "missing.toml"], ["-i", str(malformed)], ["--unknown"]):
             result = subprocess.run([executable, *args], cwd=root, env=environment,
                                     capture_output=True, timeout=5)
             assert result.returncode == 2, (args, result.stderr)
-        assert not automatic.exists(), "Explicit selection created automatic config"
+            if len(args) == 2:
+                assert args[1].encode() in result.stderr, result.stderr
+        assert (automatic / "nav" / "nav.toml").exists(), "Normal config layer was not discovered"
         # Both TDX option spellings select the same file; paths resolve from cwd.
-        for options in (["-i", "custom.toml"], ["-icustom.toml"]):
+        for options in (["-i", "custom.toml"], ["-icustom.toml"], ["-i", str(config)]):
             pid, fd = pty.fork()
             if pid == 0:
                 os.chdir(root)
@@ -44,6 +48,7 @@ def main():
                 assert "File" in screen.text().splitlines()[0] and "Search" in screen.text().splitlines()[0]
                 assert "sample.txt" in screen.text().splitlines()[1]
                 assert "F10 Close" in screen.text(), screen.text()
+                assert "F5 Prev" in screen.text() and "F6 Next" in screen.text(), screen.text()
                 write(fd, b"\x1b[21~", screen=screen)
                 alive(pid)
                 write(fd, b"/", screen=screen)
@@ -71,11 +76,26 @@ def main():
                 exited = True
             finally:
                 stop_nav(pid, fd, exited)
-        assert not automatic.exists(), "Explicit config did not bypass automatic discovery"
+        assert (automatic / "nav" / "nav.toml").exists()
         config.write_text('[keys.panel]\n"F5" = "unknown.command"\n')
         result = subprocess.run([executable, "-i", str(config)], env=environment,
                                 capture_output=True, timeout=5)
         assert result.returncode == 2 and b"invalid binding" in result.stderr
+        # Exact palette paths also work through CLI, with profile chrome applied.
+        config.write_text('[profile]\nname="Sparse UI"\n[layout]\nshow_menu=false\nshow_status=false\nshow_function_bar=false\n[keys]\nquit="Ctrl+Q"\n')
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execve(executable, [executable, "-i", str(config), str(left), str(right)], environment)
+        exited = False
+        try:
+            resize(fd, 120, 30); time.sleep(0.3)
+            screen = TerminalScreen(120, 30); screen.feed(drain(fd))
+            assert "F5 Copy" not in screen.text(), screen.text()
+            assert "Command" not in screen.text().splitlines()[0], screen.text()
+            write(fd, b"\x11")
+            wait_for_exit(pid, "sparse profile quit"); exited = True
+        finally:
+            stop_nav(pid, fd, exited)
     print("CLI -i, configurable dispatch, modal cancellation, prefix copy, and menu labels: passed")
 
 

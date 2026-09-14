@@ -220,7 +220,27 @@ static void test_path_normalize_component_limit(void)
     assert(nav_path_normalize(long_path, out, sizeof out) == -1);
 }
 
+static void test_profile_columns(void)
+{
+    NavConfig config = {.pane_show_size = true, .pane_show_modified = true, .size_bytes = true};
+    snprintf(config.date_format, sizeof config.date_format, "%%Y");
+    NavEntry entry = {.size = 1536, .modified = 1704067200,
+                      .flags = NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_MODIFIED_KNOWN};
+    snprintf(entry.name, sizeof entry.name, "example.txt");
+    char row[128], header[128];
+    nav_format_entry_full_for_config(&entry, 72, row, sizeof row, &config);
+    assert(strstr(row, "1536") && !strstr(row, "KiB"));
+    nav_format_panel_header_for_config(NAV_PANEL_FULL, NAV_SORT_NAME, 72, header, sizeof header, &config);
+    assert(strstr(header, "Size") && strstr(header, "Modified"));
+    config.pane_show_size = config.pane_show_modified = false;
+    nav_format_panel_header_for_config(NAV_PANEL_FULL, NAV_SORT_NAME, 72, header, sizeof header, &config);
+    assert(!strstr(header, "Size") && !strstr(header, "Modified"));
+    nav_format_entry_full_for_config(&entry, 72, row, sizeof row, &config);
+    assert(strstr(row, "example.txt") && !strstr(row, "1536"));
+}
+
 int main(void){char root[]="/tmp/nav-test-XXXXXX",source[NAV_PATH_MAX],destination[NAV_PATH_MAX],small[NAV_PATH_MAX],error[256];unsigned char data[200000];NavProvider*provider=nav_local_provider();Progress state={0};FILE*file;struct stat st;NavPane pane={0};NavHistory history={.current=-1};NavLocation one={0},two={0},three={0};
+    test_profile_columns();
     test_synthetic_brief();
     test_commander_layout();
     test_leaf_name_bounds();

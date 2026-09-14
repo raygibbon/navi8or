@@ -149,6 +149,10 @@ int nav_term_poll_event(NavTermEvent *event, int timeout_ms)
         return -1;
     memset(event, 0, sizeof *event);
     result = timeout_ms < 0 ? tb_poll_event(&raw) : tb_peek_event(&raw, timeout_ms);
+    /* Alt-mode Escape needs a short ambiguity window even when the caller
+       otherwise polls without waiting. Ordinary empty polls remain immediate. */
+    if (timeout_ms == 0 && result == TB_ERR_NEED_MORE)
+        result = tb_peek_event(&raw, 30);
     /* Termbox reports a populated event as TB_OK (zero). */
     if (result < 0)
         return result;

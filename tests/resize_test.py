@@ -725,7 +725,7 @@ def main(executable):
         default_config_home = os.path.join(root, "default-config")
         classic_config_home = os.path.join(root, "classic-config")
         light_config_home = os.path.join(root, "light-config")
-        paper_config_home = os.path.join(root, "paper-config")
+        alternate_light_config_home = os.path.join(root, "alternate-light-config")
         repository_config_home = os.path.join(root, "repository-config")
         vault_config_home = os.path.join(root, "vault-config")
         marker = os.path.join(root, "editor-ran")
@@ -751,7 +751,7 @@ def main(executable):
         os.mkdir(default_config_home)
         os.makedirs(os.path.join(classic_config_home, "nav", "themes"))
         os.makedirs(os.path.join(light_config_home, "nav", "themes"))
-        os.makedirs(os.path.join(paper_config_home, "nav", "themes"))
+        os.makedirs(os.path.join(alternate_light_config_home, "nav", "themes"))
         os.makedirs(os.path.join(repository_config_home, "nav"))
         os.makedirs(os.path.join(vault_config_home, "nav"))
         with open(os.path.join(config_home, "nav", "nav.toml"), "w",
@@ -787,14 +787,14 @@ def main(executable):
                                    "solar-light.toml"), "w",
                       encoding="utf-8") as destination:
                 destination.write(source.read())
-        with open(os.path.join(paper_config_home, "nav", "nav.toml"), "w",
+        with open(os.path.join(alternate_light_config_home, "nav", "nav.toml"), "w",
                   encoding="utf-8") as stream:
-            stream.write("[theme]\nname = \"paper\"\n")
+            stream.write("[theme]\nname = \"solar-light\"\n")
         source_theme = os.path.join(os.path.dirname(executable), "themes",
-                                    "paper.toml")
+                                    "solar-light.toml")
         with open(source_theme, "r", encoding="utf-8") as source:
-            with open(os.path.join(paper_config_home, "nav", "themes",
-                                   "paper.toml"), "w",
+            with open(os.path.join(alternate_light_config_home, "nav", "themes",
+                                   "solar-light.toml"), "w",
                       encoding="utf-8") as destination:
                 destination.write(source.read())
         with open(os.path.join(behavior_left, "sample.txt"), "w",
@@ -866,7 +866,7 @@ def main(executable):
             absent=["─".encode(), b"[L]", b"[R]"])
         run_initial_screen_check(
             executable, full_visual_left, full_visual_right,
-            paper_config_home, "Paper modern screen hierarchy",
+            alternate_light_config_home, "Light modern screen hierarchy",
             [b"Local Filesystem", b"Name", b"Size", b"Modified",
              b"F1", b"Help", b"F10", b"Quit"],
             absent=["─".encode(), b"[L]", b"[R]"])
@@ -877,7 +877,7 @@ def main(executable):
         run_menu_close_restore_check(executable, behavior_left, behavior_right,
                                      light_config_home, "Light menu restore")
         run_menu_close_restore_check(executable, behavior_left, behavior_right,
-                                     paper_config_home, "Paper menu restore")
+                                     alternate_light_config_home, "Light menu restore")
         run_menu_resize_restore_check(executable, behavior_left, behavior_right,
                                       full_config_home, "Modern menu resize restore")
         run_menu_resize_restore_check(executable, behavior_left, behavior_right,
@@ -893,11 +893,11 @@ def main(executable):
                          light_config_home, "Light Viewer",
                          [DOWN, b"\x1bOR"], b"Esc Back", [b"\x1b"])
         run_screen_check(executable, behavior_left, behavior_right,
-                         paper_config_home, "Paper dialog",
+                         alternate_light_config_home, "Light dialog",
                          [DOWN, b"\x1c", DOWN, b"\r"],
                          b"File Properties", [b"\x1b"])
         run_screen_check(executable, behavior_left, behavior_right,
-                         paper_config_home, "Paper Viewer",
+                         alternate_light_config_home, "Light Viewer",
                          [DOWN, b"\x1bOR"], b"Esc Back", [b"\x1b"])
 
         run_screen_check(executable, behavior_left, behavior_right, config_home,

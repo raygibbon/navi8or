@@ -34,6 +34,8 @@ int main(void)
     expect(TB_KEY_CTRL_U, 0, 'u', NAV_MOD_CTRL);
     expect(TB_KEY_CTRL_Q, 0, 'q', NAV_MOD_CTRL);
     expect(TB_KEY_CTRL_F, 0, 'f', NAV_MOD_CTRL);
+    expect(TB_KEY_INSERT, 0, NAV_KEY_INSERT, 0);
+    expect(TB_KEY_INSERT, TB_MOD_SHIFT, NAV_KEY_INSERT, NAV_MOD_SHIFT);
     expect(TB_KEY_F3, 0, NAV_KEY_F3, 0);
     expect(TB_KEY_F5, 0, NAV_KEY_F5, 0);
     expect(TB_KEY_F10, 0, NAV_KEY_F10, 0);

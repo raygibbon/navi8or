@@ -16,13 +16,13 @@ int main(int argc, char **argv)
         const char *option = argv[argument++];
         if (!strcmp(option, "--")) break;
         if (!strcmp(option, "--help")) {
-            puts("Usage: nav [-i config-file] [left-directory] [right-directory]\nNavi8or - keyboard-first local and remote repository navigator.");
+            puts("Usage: nav [-i profile-file] [left-directory] [right-directory]\nNavi8or - keyboard-first local and remote repository navigator.");
             return 0;
         }
         if (option[1] == 'i') {
             config_file = option[2] ? option + 2 : argument < argc ? argv[argument++] : NULL;
             if (config_file && config_file[0] && config_file[0] != '-') continue;
-            fprintf(stderr, "nav: -i requires a configuration file\n");
+            fprintf(stderr, "nav: -i requires a profile file\n");
         } else fprintf(stderr, "nav: unknown option: %s\n", option);
         return 2;
     }

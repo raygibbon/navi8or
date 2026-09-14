@@ -153,31 +153,29 @@ the target's glibc/kernel ABI, DNS configuration and runtime trust store.
 
 ## Configuration and themes
 
-Use `nav -i path/to/nav.toml` (or `-ipath/to/nav.toml`) to select a TOML file
-without automatic config discovery. Keyboard bindings and generic Ctrl-prefix
-families resolve to shared named commands. See [input/config conventions and
-default keys](docs/INPUT_COMMANDS.md) and the [example keymap](docs/examples/keymap.toml).
-Refresh is now `Ctrl+R R`; the traditional file-manager function keys remain.
+Run `nav` for the unchanged Solar Dark default, or load a UI profile directly:
 
-On first run Navi8or creates `$XDG_CONFIG_HOME/nav/nav.toml` and
-`$XDG_CONFIG_HOME/nav/themes/solar-dark.toml`; without `XDG_CONFIG_HOME` it
-uses `~/.config/nav/`. These files control hidden files, sort mode, Viewer line
-numbers and wrapping, the F4 editor argv, confirmations, transfer buffer size,
-history behavior, and the active theme. Syntax highlighting is not implemented
-and is intentionally not a configuration option. Navi8or uses the vendored tomlc99
-parser. Malformed files report an error and retain the running configuration
-during live reload; invalid supported values produce a warning and retain a
-bounded default. `make dist` creates a clean source archive, and `make
-dist-check` builds and tests the extracted archive.
+```bash
+nav -i themes/classic-dos.toml
+nav -i ~/.config/nav/my-profile.toml
+```
 
-Solar Dark is the restrained Modern default. Themes choose the small
-`ui.style = "modern"` or `"classic"` presentation profile independently from
-their semantic colours; Classic DOS, Navi8or Classic, Commander, CRT,
-Workbench, and CDE palettes retain their traditional presentation. New themes
-use semantic format-2 `ui.*` roles. Existing format-1 themes using
-historical `tdx.*`, `viewer.*`, `search.*`, `progress`, and `navigator.*` keys
-remain supported through one compatibility translation layer. See
-[`docs/THEME_FORMAT.md`](docs/THEME_FORMAT.md).
+Settings apply in order: compiled defaults, normal `nav.toml`, the exact `-i`
+profile, then explicit command-line directory arguments. Missing or malformed
+explicit profiles fail with their path and reason. Copy one of the four shipped
+profiles (Classic DOS, Solar Dark, Solar Light, Monochrome) and customize it.
+Open **Options → Preferences** (default `Ctrl+T P`) to preview colors, display
+settings and captured key bindings; Apply, Save/Save As and Cancel share the TOML
+profile model. See [editing and saving profiles](docs/PROFILES.md),
+[profile settings](docs/THEME_FORMAT.md) and
+[commands and default keys](docs/INPUT_COMMANDS.md).
+
+On first run Navi8or creates `$XDG_CONFIG_HOME/nav/nav.toml` and a Solar Dark
+palette; otherwise it uses `~/.config/nav/`. Normal configuration retains
+repositories, credentials, vault and transfer/editor operational settings.
+Profiles configure colors, chrome, pane display, Viewer presentation and keys.
+Existing semantic format-2 palettes and historical format-1 palettes remain
+accepted. No syntax highlighting or internal editor options are introduced.
 
 `Tab` switches Commander panels. Closing a pull-down leaves the permanent
 Commander menu bar visible, closing Viewer returns to the previously active panel, and `Ctrl+\\`
@@ -313,5 +311,8 @@ Navi8or and TDX are separate applications. Navi8or owns its UI API and semantic 
 - Artifactory-specific APIs
 - Optional custom-header authentication
 - Background transfer queue
-- Additional TOML themes and broader preference coverage
+- Broader preference coverage
 - Windows and macOS platform implementations
+
+Browse or download pasted URLs with Ctrl+L or File → Enter URL / Location...;
+see [location and download behavior](docs/LOCATIONS.md).

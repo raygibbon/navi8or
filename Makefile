@@ -171,7 +171,7 @@ ifeq ($(USE_LINUX_DEPS),1)
 linux-deps-test: nav | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/linux_deps_test.c $(LDFLAGS) -o build/linux-deps-test $(LDLIBS)
 	python3 tests/linux_deps_test.py ./build/linux-deps-test
-check: linux-deps-test
+check: linux-deps-test profile-test preferences-integration-test
 endif
 
 core-test: | build
@@ -198,11 +198,27 @@ input-test: | build
 	./build/input-test
 
 config-test: | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/config_test.c src/config.c $(INPUT_SOURCES) src/platform/posix.c third_party/toml.c $(LDFLAGS) -o build/config-test
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/config_test.c src/config.c src/theme.c src/symbols.c $(INPUT_SOURCES) src/platform/posix.c third_party/toml.c $(LDFLAGS) -o build/config-test
 	./build/config-test
 
+profile-test: | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/profile_test.c src/profile.c src/config.c src/theme.c src/symbols.c $(INPUT_SOURCES) src/platform/posix.c third_party/toml.c $(LDFLAGS) -o build/profile-test
+	./build/profile-test
+
+location-test: nav
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/location_test.c $(filter-out $(OBJECT_DIR)/main.o,$(OBJECTS)) $(OBJECT_DIR)/toml.o $(LDFLAGS) -o build/location-test $(LDLIBS)
+	python3 tests/location_integration_test.py ./build/location-test ./nav
+
+.PHONY: location-test
+check: location-test
+
+preferences-integration-test: nav
+	python3 tests/preferences_integration_test.py ./nav
+
+.PHONY: preferences-integration-test
+.PHONY: profile-test
 theme-test: | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/theme_test.c src/theme.c src/symbols.c src/platform/posix.c third_party/toml.c $(LDFLAGS) -o build/theme-test
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/theme_test.c $(INPUT_SOURCES) src/ui/layout.c src/config.c src/theme.c src/symbols.c src/platform/posix.c third_party/toml.c $(LDFLAGS) -o build/theme-test
 	./build/theme-test
 
 vault-test: verify-libsodium | build
@@ -219,7 +235,7 @@ smb-path-test: | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/smb_path_test.c src/provider/smb_path.c $(LDFLAGS) -o build/smb-path-test
 	./build/smb-path-test
 
-HTTP_TEST_SOURCES := src/provider/smb.c src/provider/smb_path.c src/provider/registry.c src/provider/http.c src/provider/local.c src/config.c $(INPUT_SOURCES) src/credential/store.c src/credential/vault.c src/platform/secure_file_posix.c src/platform/posix.c src/commander.c src/ui/layout.c src/path.c src/view/source.c src/view/viewer.c src/transfer/transfer.c third_party/toml.c
+HTTP_TEST_SOURCES := src/provider/smb.c src/provider/smb_path.c src/provider/registry.c src/provider/http.c src/provider/local.c src/config.c src/theme.c src/symbols.c $(INPUT_SOURCES) src/credential/store.c src/credential/vault.c src/platform/secure_file_posix.c src/platform/posix.c src/commander.c src/ui/layout.c src/path.c src/view/source.c src/view/viewer.c src/transfer/transfer.c third_party/toml.c
 
 .PHONY: http-listing-test
 http-listing-test: nav verify-curl verify-libsodium verify-libsmb2 | build

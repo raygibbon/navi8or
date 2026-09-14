@@ -8,9 +8,10 @@
 static const struct { const char *name; int key; } names[] = {
     {"Up", NAV_KEY_UP}, {"Down", NAV_KEY_DOWN}, {"Left", NAV_KEY_LEFT},
     {"Right", NAV_KEY_RIGHT}, {"Home", NAV_KEY_HOME}, {"End", NAV_KEY_END},
+    {"PageUp", NAV_KEY_PAGE_UP}, {"PageDown", NAV_KEY_PAGE_DOWN},
     {"PgUp", NAV_KEY_PAGE_UP}, {"PgDn", NAV_KEY_PAGE_DOWN},
     {"Delete", NAV_KEY_DELETE}, {"Backspace", NAV_KEY_BACKSPACE},
-    {"Enter", NAV_KEY_ENTER}, {"Escape", NAV_KEY_ESCAPE}, {"Tab", NAV_KEY_TAB},
+    {"Insert", NAV_KEY_INSERT}, {"Enter", NAV_KEY_ENTER}, {"Escape", NAV_KEY_ESCAPE}, {"Tab", NAV_KEY_TAB},
     {"Space", ' '}, {"Plus", '+'}
 };
 int nav_key_parse(const char *text, NavKeyStroke *key)

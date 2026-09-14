@@ -8,6 +8,7 @@
 #include "nav_credential.h"
 #include "nav_platform.h"
 #include "nav_input.h"
+#include "nav_theme.h"
 
 #define NAV_PATH_MAX 4096
 #define NAV_NAME_MAX 256
@@ -47,11 +48,6 @@ typedef enum
 typedef enum { NAV_PANEL_BRIEF, NAV_PANEL_FULL } NavPanelView;
 typedef enum
 {
-    NAV_UI_STYLE_MODERN,
-    NAV_UI_STYLE_CLASSIC
-} NavUiStyle;
-typedef enum
-{
     NAV_MESSAGE_STATUS,
     NAV_MESSAGE_NOTICE,
     NAV_MESSAGE_WARNING,
@@ -79,6 +75,13 @@ typedef struct
 typedef struct
 {
     NavKeymap keymap;
+    NavTheme profile;
+    char profile_path[NAV_PATH_MAX];
+    bool show_menu, show_status, show_function_bar;
+    bool show_menu_keys, show_dialog_keys, show_help_keys;
+    int column_separator; /* -1 follows the chrome style. */
+    bool pane_show_size, pane_show_modified, size_bytes;
+    char date_format[64];
     char config_path[NAV_PATH_MAX];
     bool explicit_config;
     bool confirm_delete;
@@ -116,6 +119,7 @@ typedef enum
     NAV_MODE_EDITOR,
     NAV_MODE_TERMINAL
 } NavMode;
+typedef bool (*NavCancelFn)(void *);
 typedef void (*NavProgressFn)(uint64_t done, uint64_t total, bool total_known, void *userdata);
 
 typedef struct
@@ -158,6 +162,9 @@ struct NavProvider
     int (*open_write)(NavProvider *, const char *, bool, uint64_t, bool,
                       void **, char *, size_t);
     int (*read)(NavProvider *, void *, void *, size_t, size_t *, char *, size_t);
+    /* Optional interruption while a transport waits for incoming bytes. */
+    int (*read_cancellable)(NavProvider *, void *, void *, size_t, size_t *,
+                            NavCancelFn, void *, char *, size_t);
     int (*read_at)(NavProvider *, const char *, uint64_t, void *, size_t,
                    size_t *, bool *, uint64_t *, bool *, char *, size_t);
     int (*write)(NavProvider *, void *, const void *, size_t, char *, size_t);
@@ -217,6 +224,8 @@ typedef struct
     NavMode mode;
     NavMode previous_mode;
     bool show_hidden, running;
+    bool profile_dirty;
+    NavConfig *profile_saved;
     NavConfig config;
     char status[256];
     NavMessageKind status_kind;
@@ -283,6 +292,8 @@ void nav_pane_page(NavPane *, int direction);
 void nav_entry_format_display_name(const NavEntry *, char *, size_t);
 void nav_format_size(uint64_t, char *, size_t);
 void nav_format_panel_header(NavPanelView, NavSortMode, int, char *, size_t);
+void nav_format_entry_full_for_config(const NavEntry *, int, char *, size_t, const NavConfig *);
+void nav_format_panel_header_for_config(NavPanelView, NavSortMode, int, char *, size_t, const NavConfig *);
 void nav_format_entry_full(const NavEntry *, int, char *, size_t);
 void nav_panel_full_layout(int, NavPanelFullLayout *);
 bool nav_commander_layout(int, int, NavCommanderLayout *);
@@ -291,6 +302,8 @@ bool nav_commander_layout_for_style(int, int, NavUiStyle,
 typedef struct {
     int width, height, menu_row, workspace_top, workspace_bottom, status_row, command_row;
 } NavShellLayout;
+NavShellLayout nav_shell_layout_for_config(int, int, const NavConfig *);
+bool nav_commander_layout_for_config(int, int, NavUiStyle, const NavConfig *, NavCommanderLayout *);
 NavShellLayout nav_shell_layout(int, int);
 size_t nav_function_key_layout(int, const NavKeymap *, NavInputContext, NavFunctionKeySegment *, size_t);
 void nav_provider_display_name(const NavProvider *, char *, size_t);
@@ -304,5 +317,10 @@ const NavEditorConfig *nav_editor_default_config(void);
 int nav_platform_launch_editor(const NavEditorConfig *, const char *, char *, size_t);
 int nav_platform_config_dir(char *, size_t);
 
+/* owned=true transfers a transient provider to the caller. Direct HTTP URLs
+   choose the longest safe saved root; other locations retain normal dispatch. */
+NavProvider *nav_location_resolve(NavApp *, const char *, NavEntry *, bool *, bool *, char *, size_t);
+int nav_download_copy(NavProvider *, const char *, NavProvider *, const char *, bool,
+                      size_t, NavProgressFn, NavCancelFn, void *, char *, size_t);
 int nav_ui_run(NavApp *);
 #endif

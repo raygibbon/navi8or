@@ -1,41 +1,35 @@
 # nav -i docs/examples/keymap.toml [left-directory] [right-directory]
-# Unspecified bindings and settings retain their built-in defaults.
-[app]
-theme = "classic-dos"
-confirm_delete = true
-show_hidden = false
+# Modern command-to-key UI profile. Omitted options inherit normal defaults.
+# Copy a bundled themes/*.toml when customizing a complete palette.
+[profile]
+name = "Keymap example"
+format = 2
 
-[panels]
+[panes]
 view = "full"
 directories_first = true
 
-[keys.global]
-"Ctrl+Q" = "app.quit"
-"Ctrl+\\" = "menu.open"
-"F1" = "help.open"
+[shortcuts]
+show_function_bar = true
+show_menu_keys = true
+show_dialog_keys = true
+show_help_keys = true
 
-[keys.panel]
-"Tab" = "panel.switch"
-"Enter" = "file.open"
-"Backspace" = "panel.parent"
-"F3" = "file.view"
-"F4" = "file.edit"
-"F5" = "file.copy"
-"F6" = "file.move"
-"F7" = "file.mkdir"
-"F8" = "file.delete"
-"Ctrl+F C" = "file.copy"
-"Ctrl+F M" = "file.move"
-"Ctrl+F R" = "file.rename"
-"Ctrl+F D" = "file.delete"
-"Ctrl+F K" = "file.mkdir"
-# Add another family without changing any action implementation:
-"Ctrl+X C" = "file.copy"
+[keys]
+help = ["F1", "Ctrl+H"]
+quit = ["Ctrl+Q", "F10"]
+menu = ["Ctrl+\\", "F2"]
+pane_switch = ["Tab", "Ctrl+P S"]
+parent = ["Backspace", "Alt+Up", "Ctrl+PgUp", "Ctrl+N P"]
+view = ["F3", "Ctrl+V V"]
+edit = "F4"
+copy = ["F5", "Ctrl+F C", "Ctrl+X C"]
+move = ["F6", "Ctrl+F M"]
+mkdir = ["F7", "Ctrl+F K"]
+delete = ["F8", "Ctrl+F D"]
+location = ["Ctrl+L", "Ctrl+N O"]
+refresh = ["Ctrl+N R", "Ctrl+R R"]
+preferences = "Ctrl+T P"
 
-[keys.viewer]
-"Ctrl+S" = "search.find"
-"Ctrl+Q" = "viewer.close"
-
-[keys.dialog]
-"Escape" = "dialog.cancel"
-"Ctrl+Q" = "dialog.cancel"
+[keys.viewer.commands]
+download = "Alt+D"

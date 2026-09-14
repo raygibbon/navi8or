@@ -71,8 +71,8 @@ static int make_menu(const NavUiMenu *menu, PreparedMenu *prepared)
         const NavUiMenuItem *item = &menu->minor[index];
         int length = item->line ? (int)strlen(item->line) : 0;
         char binding[80];
-        int key_length = nav_keymap_label(nav_ui_keymap(), nav_ui_workspace_context(),
-                                          (NavCommand)item->command, binding, sizeof binding);
+        int key_length = nav_ui_show_menu_keys() ? nav_keymap_label(nav_ui_keymap(), nav_ui_workspace_context(),
+                                          (NavCommand)item->command, binding, sizeof binding) : 0;
         if (!key_length) key_length = -2;
         if (length > longest_name) longest_name = length;
         if (key_length > longest_key) longest_key = key_length;
@@ -109,8 +109,8 @@ static int make_menu(const NavUiMenu *menu, PreparedMenu *prepared)
             memcpy(line + 5, item->line, amount);
         }
         char binding[80];
-        int length = nav_keymap_label(nav_ui_keymap(), nav_ui_workspace_context(),
-                                      (NavCommand)item->command, binding, sizeof binding);
+        int length = nav_ui_show_menu_keys() ? nav_keymap_label(nav_ui_keymap(), nav_ui_workspace_context(),
+                                      (NavCommand)item->command, binding, sizeof binding) : 0;
         if (length > 0) {
             int start = prepared->width - 2 - length;
             if (start >= 0) memcpy(line + start, binding, (size_t)length);

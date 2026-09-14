@@ -10,6 +10,7 @@ int nav_keymap_bind(NavKeymap *map, NavInputContext context, const char *sequenc
 {
     NavBinding binding = {.context = context, .configured = true};
     char text[96];
+    NavCommand conflict_command = NAV_CMD_NONE;
     binding.command = nav_command_parse(name);
     if (context >= NAV_CONTEXT_COUNT || binding.command >= NAV_CMD_COUNT ||
         strlen(sequence) >= sizeof text) goto invalid;
@@ -22,6 +23,7 @@ int nav_keymap_bind(NavKeymap *map, NavInputContext context, const char *sequenc
     for (size_t i = 0; i < map->count; i++) {
         NavBinding *old = &map->bindings[i];
         if (old->context != context || !equal(old->keys[0], binding.keys[0])) continue;
+        conflict_command = old->command;
         if (old->length != binding.length) goto conflict;
         if (binding.length == 2 && !equal(old->keys[1], binding.keys[1])) continue;
         if (old->configured) goto conflict;
@@ -34,7 +36,8 @@ int nav_keymap_bind(NavKeymap *map, NavInputContext context, const char *sequenc
     map->bindings[map->count++] = binding;
     return 0;
 conflict:
-    snprintf(error, size, "duplicate or prefix-conflicting binding: %s", sequence);
+    snprintf(error, size, "duplicate or prefix-conflicting binding %s: %s vs %s", sequence,
+             nav_command_description(conflict_command), nav_command_description(binding.command));
     return -1;
 invalid:
     snprintf(error, size, "invalid binding: %s = %s", sequence, name);
@@ -52,9 +55,11 @@ void nav_keymap_defaults(NavKeymap *map)
 #define B(context, key, cmd) add(map, NAV_CONTEXT_##context, key, NAV_CMD_##cmd)
     B(GLOBAL, "Ctrl+Q", QUIT); B(GLOBAL, "F10", QUIT);
     B(GLOBAL, "F1", HELP); B(GLOBAL, "Ctrl+H", HELP);
+    B(GLOBAL, "Ctrl+T P", PREFERENCES);
     B(GLOBAL, "Ctrl+\\", MENU); B(GLOBAL, "F2", MENU);
     B(PANEL, "F3", VIEW); B(PANEL, "F4", EDIT); B(PANEL, "F5", COPY);
     B(PANEL, "F6", MOVE); B(PANEL, "F7", MKDIR); B(PANEL, "F8", DELETE);
+    B(PANEL, "Ctrl+L", OPEN_LOCATION);
     B(PANEL, "Tab", PANEL_SWITCH); B(PANEL, "Enter", OPEN);
     B(PANEL, "Backspace", PANEL_PARENT); B(PANEL, "Ctrl+PgUp", PANEL_PARENT);
     B(PANEL, "Ctrl+PgDn", OPEN); B(PANEL, "Alt+Up", PANEL_PARENT);
@@ -85,6 +90,7 @@ void nav_keymap_defaults(NavKeymap *map)
         }
     }
     B(MENU, "Ctrl+Left", LEFT); B(MENU, "Ctrl+Right", RIGHT);
+    B(DIALOG, "Tab", DOWN);
     B(DIALOG, "Backspace", BACKSPACE); B(DIALOG, "Delete", TEXT_DELETE);
     B(CONFIRM, "Y", ACCEPT); B(CONFIRM, "Enter", ACCEPT);
     B(CONFIRM, "N", CANCEL); B(CONFIRM, "Escape", CANCEL);
@@ -97,6 +103,16 @@ void nav_keymap_defaults(NavKeymap *map)
     B(VIEWER, "Ctrl+Left", LEFT_FAST); B(VIEWER, "Ctrl+Right", RIGHT_FAST);
     B(VAULT, "F7", VAULT_NEW); B(VAULT, "F4", VAULT_EDIT);
     B(VAULT, "F8", VAULT_DELETE); B(VAULT, "U", VAULT_UNLOCK); B(VAULT, "L", VAULT_LOCK);
+    B(PREFERENCES, "Up", UP); B(PREFERENCES, "Down", DOWN);
+    B(PREFERENCES, "Left", LEFT); B(PREFERENCES, "Right", RIGHT);
+    B(PREFERENCES, "Home", HOME); B(PREFERENCES, "End", END);
+    B(PREFERENCES, "PageUp", PAGE_UP); B(PREFERENCES, "PageDown", PAGE_DOWN);
+    B(PREFERENCES, "Enter", ACCEPT); B(PREFERENCES, "Escape", CANCEL);
+    B(PREFERENCES, "Ctrl+Q", CANCEL); B(PREFERENCES, "F10", CANCEL);
+    B(PREFERENCES, "Delete", TEXT_DELETE); B(PREFERENCES, "F2", PROFILE_SAVE);
+    B(PREFERENCES, "F3", PROFILE_SAVE_AS); B(PREFERENCES, "F4", PROFILE_APPLY);
+    B(PREFERENCES, "F5", KEY_APPEND); B(PREFERENCES, "F6", KEY_SEQUENCE);
+    B(PREFERENCES, "F1", HELP);
 #undef B
 }
 NavAction nav_input_resolve(NavInput *input, const NavKeymap *map,
@@ -113,7 +129,7 @@ NavAction nav_input_resolve(NavInput *input, const NavKeymap *map,
     input->pending = false;
     NavInputContext scopes[] = {context, NAV_CONTEXT_GLOBAL};
     /* Modals capture all unmatched keys; they never activate the underlying view. */
-    unsigned scope_count = context >= NAV_CONTEXT_MENU && context <= NAV_CONTEXT_VAULT ? 1 : 2;
+    unsigned scope_count = ((context >= NAV_CONTEXT_MENU && context <= NAV_CONTEXT_VAULT) || context == NAV_CONTEXT_PREFERENCES) ? 1 : 2;
     bool shifted_text = key.key >= 32 && key.key < 127 && (key.modifiers & NAV_MOD_SHIFT);
     for (unsigned scope = 0; scope < scope_count; scope++) {
         for (unsigned variant = 0; variant < (shifted_text ? 2u : 1u); variant++) {
@@ -162,4 +178,94 @@ int nav_keymap_label(const NavKeymap *map, NavInputContext context, NavCommand c
         return snprintf(buffer, size, "%s%s%s", first, length == 2 ? " " : "", length == 2 ? second : "");
     }
     return 0;
+}
+
+static bool binding_scopes_overlap(NavInputContext a, NavInputContext b)
+{
+    if (a == b) return true;
+    NavInputContext other = a == NAV_CONTEXT_GLOBAL ? b : a;
+    return (a == NAV_CONTEXT_GLOBAL || b == NAV_CONTEXT_GLOBAL) &&
+           !(other >= NAV_CONTEXT_MENU && other <= NAV_CONTEXT_VAULT) && other != NAV_CONTEXT_PREFERENCES;
+}
+bool nav_binding_overlaps(const NavBinding *a, const NavBinding *b)
+{
+    if (!binding_scopes_overlap(a->context, b->context) ||
+        a->keys[0].key != b->keys[0].key || a->keys[0].modifiers != b->keys[0].modifiers) return false;
+    return a->length == 1 || b->length == 1 ||
+           (a->keys[1].key == b->keys[1].key && a->keys[1].modifiers == b->keys[1].modifiers);
+}
+
+int nav_binding_format(const NavBinding *binding, char *out, size_t size)
+{
+    char first[32], second[32];
+    nav_key_format(binding->keys[0], first, sizeof first);
+    nav_key_format(binding->keys[1], second, sizeof second);
+    return snprintf(out, size, "%s%s%s", first, binding->length == 2 ? " " : "",
+                    binding->length == 2 ? second : "");
+}
+
+int nav_key_capture_normalize(const NavTermEvent *event, NavKeyStroke *stroke)
+{
+    if (event->type != NAV_TERM_EVENT_KEY) return -1;
+    NavKeyStroke raw = {.key = event->key, .modifiers = event->modifiers};
+    char text[64];
+    nav_key_format(raw, text, sizeof text);
+    return nav_key_parse(text, stroke);
+}
+
+int nav_keymap_labels(const NavKeymap *map, NavInputContext context, NavCommand command,
+                      char *out, size_t size)
+{
+    if (!size) return 0;
+    out[0] = 0;
+    for (size_t i = 0; i < map->count; i++) {
+        const NavBinding *b = &map->bindings[i];
+        if (b->command != command || (b->context != context && b->context != NAV_CONTEXT_GLOBAL)) continue;
+        NavInput state = {0}; NavAction action = {0};
+        for (unsigned k = 0; k < b->length; k++) {
+            NavTermEvent event = {.type = NAV_TERM_EVENT_KEY, .key = b->keys[k].key, .modifiers = b->keys[k].modifiers};
+            action = nav_input_resolve(&state, map, context, &event);
+        }
+        if (action.command != command) continue;
+        char sequence[80]; nav_binding_format(b, sequence, sizeof sequence);
+        size_t used = strlen(out);
+        if (used + strlen(sequence) + (used ? 2 : 0) >= size) {
+            if (used + 4 < size) snprintf(out + used, size - used, " ...");
+            break;
+        }
+        snprintf(out + used, size - used, "%s%s", used ? ", " : "", sequence);
+    }
+    return (int)strlen(out);
+}
+
+int nav_keymap_replace(NavKeymap *map, NavInputContext context, NavCommand command,
+                       const char *const *sequences, size_t count, bool replace,
+                       char *error, size_t size)
+{
+    NavKeymap additions = {0}, candidate = *map;
+    if (command <= NAV_CMD_NONE || command >= NAV_CMD_COUNT || command == NAV_CMD_TEXT || context >= NAV_CONTEXT_COUNT) {
+        snprintf(error, size, "invalid command or context"); return -1;
+    }
+    for (size_t i = 0; i < count; i++)
+        if (nav_keymap_bind(&additions, context, sequences[i], nav_command_name(command), error, size)) return -1;
+    size_t keep = 0;
+    for (size_t i = 0; i < candidate.count; i++) {
+        NavBinding old = candidate.bindings[i];
+        if (old.context == context && old.command == command) continue;
+        bool remove = false;
+        for (size_t j = 0; j < additions.count; j++) if (nav_binding_overlaps(&old, &additions.bindings[j])) {
+            if (!replace) {
+                char key[80]; nav_binding_format(&additions.bindings[j], key, sizeof key);
+                snprintf(error, size, "%s is assigned to %s (%s); replace with %s?", key,
+                         nav_command_description(old.command), nav_context_name(old.context), nav_command_description(command));
+                return 1;
+            }
+            remove = true;
+        }
+        if (!remove) candidate.bindings[keep++] = old;
+    }
+    candidate.count = keep;
+    if (candidate.count + additions.count > NAV_BINDING_MAX) { snprintf(error, size, "too many bindings"); return -1; }
+    for (size_t i = 0; i < additions.count; i++) candidate.bindings[candidate.count++] = additions.bindings[i];
+    *map = candidate; return 0;
 }

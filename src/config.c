@@ -99,6 +99,12 @@ void nav_config_defaults(NavConfig *config)
 {
     memset(config, 0, sizeof *config);
     nav_keymap_defaults(&config->keymap);
+    config->profile = *nav_theme_default();
+    config->show_menu = config->show_status = config->show_function_bar = true;
+    config->column_separator = -1;
+    config->show_menu_keys = config->show_dialog_keys = config->show_help_keys = true;
+    config->pane_show_size = config->pane_show_modified = true;
+    snprintf(config->date_format, sizeof config->date_format, "%%Y-%%m-%%d %%H:%%M");
     config->confirm_delete = true;
     config->confirm_overwrite = true;
     config->directories_first = true;
@@ -515,6 +521,165 @@ static void load_repositories(NavConfig *config, const char *directory)
     toml_free(root);
 }
 
+/* Command-oriented profile bindings replace that command's inherited keys.
+   The existing context/sequence schema remains available for fine control. */
+static int read_profile_keys(toml_table_t *keys, NavKeymap *map, NavInputContext forced, char *error, size_t size)
+{
+    if (!keys) return 0;
+    NavKeymap layer = {0}, defaults;
+    bool assigned[NAV_CMD_COUNT] = {false};
+    NavInputContext contexts[NAV_CMD_COUNT] = {0};
+    nav_keymap_defaults(&defaults);
+    for (int i = 0; ; i++) {
+        const char *name = toml_key_in(keys, i);
+        if (!name) break;
+        if (toml_table_in(keys, name)) continue;
+        NavCommand command = nav_command_parse(name);
+        if (command == NAV_CMD_COUNT || command == NAV_CMD_NONE || command == NAV_CMD_TEXT || assigned[command]) {
+            snprintf(error, size, "unknown or repeated key command: %s", name); return -1;
+        }
+        NavInputContext context = NAV_CONTEXT_PANEL;
+        for (size_t j = 0; j < defaults.count; j++) if (defaults.bindings[j].command == command) {
+            context = defaults.bindings[j].context; break;
+        }
+        if (forced < NAV_CONTEXT_COUNT) context = forced;
+        assigned[command] = true; contexts[command] = context;
+        toml_array_t *array = toml_array_in(keys, name);
+        int count = array ? toml_array_nelem(array) : 1;
+        for (int j = 0; j < count; j++) {
+            toml_datum_t value = array ? toml_string_at(array, j) : toml_string_in(keys, name);
+            if (!value.ok) { snprintf(error, size, "keys.%s must be a key string or string array", name); return -1; }
+            int result = nav_keymap_bind(&layer, context, value.u.s, nav_command_name(command), error, size);
+            free(value.u.s);
+            if (result) return -1;
+        }
+    }
+    for (size_t i = 0; i < layer.count; i++) for (size_t j = i + 1; j < layer.count; j++) {
+        if (nav_binding_overlaps(&layer.bindings[i], &layer.bindings[j])) {
+            char sequence[80]; nav_binding_format(&layer.bindings[i], sequence, sizeof sequence);
+            snprintf(error, size, "conflicting explicit key %s for %s and %s", sequence,
+                     nav_command_name(layer.bindings[i].command), nav_command_name(layer.bindings[j].command)); return -1;
+        }
+    }
+    size_t keep = 0;
+    for (size_t i = 0; i < map->count; i++) {
+        NavBinding old = map->bindings[i];
+        bool remove = assigned[old.command] && contexts[old.command] == old.context;
+        for (size_t j = 0; j < layer.count; j++) {
+            const NavBinding *replacement = &layer.bindings[j];
+            if (!nav_binding_overlaps(&old, replacement)) continue;
+            bool original = false;
+            for (size_t d = 0; d < defaults.count; d++) {
+                const NavBinding *binding = &defaults.bindings[d];
+                if (binding->context == replacement->context && binding->command == replacement->command &&
+                    binding->length == replacement->length &&
+                    binding->keys[0].key == replacement->keys[0].key && binding->keys[0].modifiers == replacement->keys[0].modifiers &&
+                    (binding->length == 1 || (binding->keys[1].key == replacement->keys[1].key && binding->keys[1].modifiers == replacement->keys[1].modifiers))) original = true;
+            }
+            /* Spelling out a global default must retain its inherited Viewer
+               override, e.g. Ctrl+Q closes Viewer instead of quitting. */
+            if (old.context == replacement->context || !original || old.configured) remove = true;
+        }
+        if (!remove) map->bindings[keep++] = old;
+    }
+    map->count = keep;
+    if (map->count + layer.count > NAV_BINDING_MAX) { snprintf(error, size, "too many key bindings"); return -1; }
+    for (size_t i = 0; i < layer.count; i++) map->bindings[map->count++] = layer.bindings[i];
+    return 0;
+}
+
+static int profile_bool(toml_table_t *table, const char *key, bool *value, char *error, size_t size)
+{
+    if (!toml_key_exists(table, key)) return 0;
+    toml_datum_t d = toml_bool_in(table, key);
+    if (!d.ok) { snprintf(error, size, "%s must be boolean", key); return -1; }
+    *value = d.u.b != 0; return 0;
+}
+static int profile_table_keys(toml_table_t *root, const char *name, const char *const *allowed, char *error, size_t size)
+{
+    toml_table_t *table = toml_table_in(root, name);
+    if (!table) {
+        if (toml_key_exists(root, name)) { snprintf(error, size, "%s must be a table", name); return -1; }
+        return 0;
+    }
+    for (int i = 0; ; i++) {
+        const char *key = toml_key_in(table, i); if (!key) break;
+        bool found = false;
+        for (size_t j = 0; allowed[j]; j++) if (!strcmp(key, allowed[j])) found = true;
+        if (!found) { snprintf(error, size, "unsupported %s.%s", name, key); return -1; }
+    }
+    return 0;
+}
+static int profile_settings(toml_table_t *root, NavConfig *config, char *error, size_t size)
+{
+    static const char *const layout_keys[] = {"show_menu", "show_status", "show_function_bar", "show_column_separator", "border_style", "space", "shadow", NULL};
+    static const char *const pane_keys[] = {"show_size", "show_modified", "directories_first", "show_hidden", "case_sensitive_sort", "size_format", "date_format", "view", "sort", NULL};
+    static const char *const shortcut_keys[] = {"show_function_bar", "show_menu_keys", "show_dialog_keys", "show_help_keys", NULL};
+    static const char *const viewer_keys[] = {"line_numbers", "wrap", "current_line", NULL};
+    if (profile_table_keys(root, "shortcuts", shortcut_keys, error, size) || profile_table_keys(root, "layout", layout_keys, error, size) ||
+        profile_table_keys(root, "panes", pane_keys, error, size) ||
+        (!toml_table_in(root, "tdx") && profile_table_keys(root, "viewer", viewer_keys, error, size))) return -1;
+    toml_table_t *layout = toml_table_in(root, "layout"), *panes = toml_table_in(root, "panes");
+#define BOOL(table, key, field) if (profile_bool(table, key, &config->field, error, size)) return -1
+    if (layout) {
+        BOOL(layout, "show_menu", show_menu); BOOL(layout, "show_status", show_status);
+        BOOL(layout, "show_function_bar", show_function_bar);
+        if (toml_key_exists(layout, "show_column_separator")) {
+            toml_datum_t auto_value = toml_string_in(layout, "show_column_separator");
+            if (auto_value.ok) {
+                bool valid = !strcmp(auto_value.u.s, "auto"); free(auto_value.u.s);
+                if (!valid) { snprintf(error, size, "show_column_separator must be boolean or auto"); return -1; }
+                config->column_separator = -1;
+            } else {
+                bool value = false; if (profile_bool(layout, "show_column_separator", &value, error, size)) return -1;
+                config->column_separator = value;
+            }
+        }
+    }
+    toml_table_t *shortcuts = toml_table_in(root, "shortcuts");
+    if (shortcuts) {
+        BOOL(shortcuts, "show_function_bar", show_function_bar);
+        BOOL(shortcuts, "show_menu_keys", show_menu_keys); BOOL(shortcuts, "show_dialog_keys", show_dialog_keys);
+        BOOL(shortcuts, "show_help_keys", show_help_keys);
+    }
+    if (panes) {
+        BOOL(panes, "show_size", pane_show_size); BOOL(panes, "show_modified", pane_show_modified);
+        BOOL(panes, "directories_first", directories_first); BOOL(panes, "show_hidden", show_hidden);
+        BOOL(panes, "case_sensitive_sort", case_sensitive_sort);
+        if (toml_key_exists(panes, "view")) {
+            char text[16];
+            if (!read_string(panes, "view", text, sizeof text) || (strcmp(text, "brief") && strcmp(text, "full"))) {
+                snprintf(error, size, "panes.view must be brief or full"); return -1;
+            }
+            config->panel_view = !strcmp(text, "brief") ? NAV_PANEL_BRIEF : NAV_PANEL_FULL;
+        }
+        if (toml_key_exists(panes, "sort")) {
+            char text[16];
+            if (!read_string(panes, "sort", text, sizeof text) || (strcmp(text, "name") && strcmp(text, "size") && strcmp(text, "date"))) {
+                snprintf(error, size, "panes.sort must be name, size or date"); return -1;
+            }
+            config->sort = !strcmp(text, "size") ? NAV_SORT_SIZE : !strcmp(text, "date") ? NAV_SORT_DATE : NAV_SORT_NAME;
+        }
+        if (toml_key_exists(panes, "size_format")) {
+            char text[32];
+            if (!read_string(panes, "size_format", text, sizeof text) || (strcmp(text, "auto") && strcmp(text, "bytes"))) {
+                snprintf(error, size, "panes.size_format must be auto or bytes"); return -1;
+            }
+            config->size_bytes = !strcmp(text, "bytes");
+        }
+        if (toml_key_exists(panes, "date_format")) {
+            toml_datum_t d = toml_string_in(panes, "date_format");
+            if (!d.ok) { snprintf(error, size, "panes.date_format must be a string"); return -1; }
+            bool valid = d.u.s[0] && strlen(d.u.s) < sizeof config->date_format;
+            if (valid) snprintf(config->date_format, sizeof config->date_format, "%s", d.u.s);
+            free(d.u.s);
+            if (!valid) { snprintf(error, size, "panes.date_format must be 1-63 bytes"); return -1; }
+        }
+    }
+#undef BOOL
+    return 0;
+}
+
 static int read_keymap(toml_table_t *root, NavKeymap *map, char *error, size_t size)
 {
     toml_table_t *keys = toml_table_in(root, "keys");
@@ -522,9 +687,11 @@ static int read_keymap(toml_table_t *root, NavKeymap *map, char *error, size_t s
         if (toml_key_exists(root, "keys")) { snprintf(error, size, "keys must be a table"); return -1; }
         return 0;
     }
+    if (read_profile_keys(keys, map, NAV_CONTEXT_COUNT, error, size)) return -1;
     for (int i = 0; ; i++) {
         const char *section = toml_key_in(keys, i);
         if (!section) break;
+        if (!toml_table_in(keys, section)) continue;
         NavInputContext context;
         for (context = 0; context < NAV_CONTEXT_COUNT; context++)
             if (!strcmp(section, nav_context_name(context))) break;
@@ -535,6 +702,7 @@ static int read_keymap(toml_table_t *root, NavKeymap *map, char *error, size_t s
         for (int j = 0; ; j++) {
             const char *sequence = toml_key_in(table, j);
             if (!sequence) break;
+            if (!strcmp(sequence, "commands") && toml_table_in(table, sequence)) continue;
             toml_datum_t value = toml_string_in(table, sequence);
             if (!value.ok) {
                 snprintf(error, size, "binding %s must name a command", sequence); return -1;
@@ -543,15 +711,24 @@ static int read_keymap(toml_table_t *root, NavKeymap *map, char *error, size_t s
             free(value.u.s);
             if (result) return -1;
         }
+        if (read_profile_keys(toml_table_in(table, "commands"), map, context, error, size)) return -1;
+    }
+    for (size_t i = 0; i < map->count; i++) for (size_t j = i + 1; j < map->count; j++) {
+        if (map->bindings[i].configured && map->bindings[j].configured && nav_binding_overlaps(&map->bindings[i], &map->bindings[j])) {
+            char sequence[80]; nav_binding_format(&map->bindings[i], sequence, sizeof sequence);
+            snprintf(error, size, "conflicting explicit binding %s for %s and %s", sequence, nav_command_name(map->bindings[i].command), nav_command_name(map->bindings[j].command));
+            return -1;
+        }
     }
     return 0;
 }
 
-int nav_config_load_file(NavConfig *config, const char *selected, char *error, size_t error_size)
+static int load_config(NavConfig *config, const char *selected, const NavConfig *base, char *error, size_t error_size)
 {
     char directory[NAV_PATH_MAX], path[NAV_PATH_MAX], parse_error[256] = {0};
     NavConfig candidate;
-    nav_config_defaults(&candidate);
+    if (base) candidate = *base; else nav_config_defaults(&candidate);
+    for (size_t i = 0; i < candidate.keymap.count; i++) candidate.keymap.bindings[i].configured = false;
     candidate.explicit_config = selected != NULL;
     if (selected) {
         if (!selected[0] || strlen(selected) >= sizeof path) {
@@ -675,7 +852,7 @@ int nav_config_load_file(NavConfig *config, const char *selected, char *error, s
         read_bool(app, "confirm_delete", &candidate.confirm_delete);
         read_bool(app, "show_hidden", &candidate.show_hidden);
     }
-    if (read_keymap(root, &candidate.keymap, error, error_size)) {
+    if (profile_settings(root, &candidate, error, error_size) || read_keymap(root, &candidate.keymap, error, error_size)) {
         toml_free(root);
         nav_keymap_defaults(&candidate.keymap);
         *config = candidate;
@@ -690,6 +867,72 @@ int nav_config_load_file(NavConfig *config, const char *selected, char *error, s
     }
     *config = candidate;
     return 0;
+}
+
+/* New UI profiles never redirect operational sidecars. Legacy full config files
+   remain accepted by -i for compatibility, layered over normal configuration. */
+int nav_config_load_file(NavConfig *config, const char *selected, char *error, size_t error_size)
+{
+    int status = load_config(config, NULL, NULL, error, error_size);
+    NavThemeResult theme;
+    nav_theme_load_result(config->theme_name, &theme);
+    config->profile = theme.theme;
+    if (config->config_path[0] && nav_platform_access(config->config_path, F_OK) == 0) {
+        if (nav_theme_overlay_file(config->config_path, &config->profile, &theme)) {
+            snprintf(error, error_size, "%s: %s", config->config_path, theme.error); return -1;
+        }
+        config->profile = theme.theme;
+    }
+    if (!selected) return status;
+    if (!selected[0] || strlen(selected) >= sizeof config->profile_path) {
+        snprintf(error, error_size, "invalid profile path: %s", selected); return -1;
+    }
+    FILE *file = nav_platform_fopen(selected, "r");
+    if (!file) { snprintf(error, error_size, "cannot read %s: %s", selected, strerror(errno)); return -1; }
+    char reason[256] = {0};
+    toml_table_t *root = toml_parse_file(file, reason, sizeof reason);
+    fclose(file);
+    if (!root) { snprintf(error, error_size, "%s: %s", selected, reason); return -1; }
+    toml_table_t *theme_info = toml_table_in(root, "theme");
+    bool profile = toml_key_exists(root, "profile") || toml_key_exists(root, "tdx") || toml_key_exists(root, "ui") ||
+                   toml_key_exists(root, "colors") || toml_key_exists(root, "layout") ||
+                   toml_key_exists(root, "panes") || (theme_info && toml_key_exists(theme_info, "format"));
+    /* Files containing only UI sections (including empty/sparse profiles) are profiles. */
+    if (!profile) {
+        profile = true;
+        const char *legacy[] = {"app", "menu", "theme", "panels", "sort", "history", "editor", "transfer", "repositories", "vault", "credentials", "network", "proxy", "cache"};
+        for (size_t i = 0; i < sizeof legacy / sizeof *legacy; i++)
+            if (toml_key_exists(root, legacy[i])) profile = false;
+    }
+    if (profile) {
+        static const char *const metadata[] = {"name", "format", NULL};
+        if (profile_table_keys(root, "profile", metadata, reason, sizeof reason)) goto fail;
+        const char *operations[] = {"repositories", "credentials", "vault", "proxy", "network", "cache", "transfer", "editor"};
+        for (size_t i = 0; i < sizeof operations / sizeof *operations; i++) if (toml_key_exists(root, operations[i])) {
+            snprintf(reason, sizeof reason, "%s belongs in normal configuration, not a UI profile", operations[i]); goto fail;
+        }
+        for (size_t i = 0; i < config->keymap.count; i++) config->keymap.bindings[i].configured = false;
+        if (profile_settings(root, config, reason, sizeof reason) || read_keymap(root, &config->keymap, reason, sizeof reason)) goto fail;
+        toml_table_t *viewer = toml_table_in(root, "viewer");
+        if (viewer && (profile_bool(viewer, "wrap", &config->viewer_wrap, reason, sizeof reason) ||
+            profile_bool(viewer, "line_numbers", &config->viewer_line_numbers, reason, sizeof reason) ||
+            profile_bool(viewer, "current_line", &config->viewer_current_line, reason, sizeof reason))) goto fail;
+    } else {
+        NavConfig base = *config;
+        if (load_config(config, selected, &base, reason, sizeof reason)) goto fail;
+        nav_theme_load_result(config->theme_name, &theme);
+        config->profile = theme.theme;
+    }
+    toml_free(root);
+    if (nav_theme_overlay_file(selected, &config->profile, &theme)) {
+        snprintf(error, error_size, "%s: %s", selected, theme.error); return -1;
+    }
+    config->profile = theme.theme;
+    snprintf(config->profile_path, sizeof config->profile_path, "%s", selected);
+    config->explicit_config = true;
+    return 0;
+fail:
+    toml_free(root); snprintf(error, error_size, "%s: %s", selected, reason); return -1;
 }
 
 int nav_config_load(NavConfig *config, char *error, size_t error_size)

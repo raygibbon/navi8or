@@ -27,6 +27,7 @@ static int translate_key(unsigned key)
     case TB_KEY_END: return NAV_KEY_END;
     case TB_KEY_PGUP: return NAV_KEY_PAGE_UP;
     case TB_KEY_PGDN: return NAV_KEY_PAGE_DOWN;
+    case TB_KEY_INSERT: return NAV_KEY_INSERT;
     case TB_KEY_DELETE: return NAV_KEY_DELETE;
     case TB_KEY_ENTER: return NAV_KEY_ENTER;
     case TB_KEY_TAB:

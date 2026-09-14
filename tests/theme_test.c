@@ -1,5 +1,7 @@
 #include "nav_theme.h"
+#include "nav.h"
 #include <assert.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,7 +67,8 @@ static void test_v2(void)
         [NAV_STYLE_KEYBAR_DISABLED] = 8, [NAV_STYLE_PATH] = 11,
         [NAV_STYLE_COLUMN_HEADER] = 8, [NAV_STYLE_VIEWER_LINE_NUMBER] = 8,
         [NAV_STYLE_VIEWER_SEARCH_MATCH] = 0, [NAV_STYLE_PROGRESS] = 0,
-        [NAV_STYLE_PANE_TITLE] = 0, [NAV_STYLE_PANE_TITLE_ACTIVE] = 14
+        [NAV_STYLE_PANE_TITLE] = 0, [NAV_STYLE_PANE_TITLE_ACTIVE] = 14,
+        [NAV_STYLE_FILE] = 7, [NAV_STYLE_DIRECTORY] = 7
     };
     static const uint8_t background[NAV_STYLE_COUNT] = {
         [NAV_STYLE_BACKGROUND] = 0, [NAV_STYLE_SURFACE] = 1,
@@ -102,19 +105,10 @@ static void test_v2(void)
 static void test_builtins(void)
 {
     static const struct { const char *name; NavUiStyle style; } themes[] = {
-        {"amber-crt", NAV_UI_STYLE_CLASSIC},
-        {"carbon", NAV_UI_STYLE_MODERN}, {"cde", NAV_UI_STYLE_CLASSIC},
         {"classic-dos", NAV_UI_STYLE_CLASSIC},
-        {"commander", NAV_UI_STYLE_CLASSIC},
-        {"dos-vga", NAV_UI_STYLE_CLASSIC},
         {"monochrome", NAV_UI_STYLE_CLASSIC},
-        {"navi8or-classic", NAV_UI_STYLE_CLASSIC},
-        {"nordic", NAV_UI_STYLE_MODERN}, {"paper", NAV_UI_STYLE_MODERN},
-        {"phosphor", NAV_UI_STYLE_CLASSIC}, {"slate", NAV_UI_STYLE_MODERN},
         {"solar-dark", NAV_UI_STYLE_MODERN},
-        {"solar-light", NAV_UI_STYLE_MODERN},
-        {"violet-night", NAV_UI_STYLE_MODERN},
-        {"workbench", NAV_UI_STYLE_CLASSIC}
+        {"solar-light", NAV_UI_STYLE_MODERN}
     };
     for (size_t index = 0; index < sizeof themes / sizeof *themes; index++)
     {
@@ -184,11 +178,90 @@ static void test_fallbacks_and_errors(void)
     assert(rmdir(directory) == 0);
 }
 
+static NavCommand resolve(const NavKeymap *map, const char *key)
+{
+    NavKeyStroke stroke; NavInput input = {0};
+    assert(nav_key_parse(key, &stroke) == 0);
+    NavTermEvent event = {.type = NAV_TERM_EVENT_KEY, .key = stroke.key,
+                         .modifiers = stroke.modifiers};
+    return nav_input_resolve(&input, map, NAV_CONTEXT_PANEL, &event).command;
+}
+
+static void test_profiles(void)
+{
+    char directory[] = "/tmp/nav-profile-XXXXXX", path[512], error[512];
+    NavConfig defaults, config; assert(mkdtemp(directory));
+    assert(setenv("XDG_CONFIG_HOME", directory, 1) == 0);
+    assert(nav_config_load(&defaults, error, sizeof error) == 0);
+    assert(defaults.show_menu && defaults.show_status && defaults.show_function_bar);
+    assert(defaults.pane_show_size && defaults.pane_show_modified);
+    assert(resolve(&defaults.keymap, "F5") == NAV_CMD_COPY);
+    DIR *shipped = opendir("themes"); assert(shipped);
+    size_t files = 0; struct dirent *item;
+    while ((item = readdir(shipped))) { size_t n = strlen(item->d_name); if (n > 5 && !strcmp(item->d_name + n - 5, ".toml")) files++; }
+    assert(closedir(shipped) == 0 && files == 4);
+    const char *profiles[] = {"classic-dos", "solar-dark", "solar-light", "monochrome"};
+    for (size_t i = 0; i < 4; i++) {
+        snprintf(path, sizeof path, "themes/%s.toml", profiles[i]);
+        assert(nav_config_load_file(&config, path, error, sizeof error) == 0);
+        assert(!strcmp(config.profile_path, path));
+        assert_resolved(&config.profile);
+    }
+    assert(nav_config_load_file(&config, "tests/fixtures/theme-v1.toml", error, sizeof error) == 0);
+    assert(config.profile.format == 1 && config.profile.style == NAV_UI_STYLE_CLASSIC);
+    snprintf(path, sizeof path, "%s/custom.toml", directory);
+    write_text(path, "[profile]\nname=\"Custom\"\n[colors]\nfile=\"yellow\"\n"
+                     "[layout]\nshow_menu=false\nshow_status=false\nshow_function_bar=false\nshow_column_separator=true\n"
+                     "[panes]\nshow_size=false\nsize_format=\"bytes\"\ndate_format=\"%Y\"\n"
+                     "[viewer]\nwrap=true\n[keys]\ncopy=[\"F6\",\"Ctrl+C\"]\nmove=\"F5\"\n");
+    assert(nav_config_load_file(&config, path, error, sizeof error) == 0);
+    assert(config.profile.foreground[NAV_STYLE_FILE] == 14);
+    assert(config.profile.foreground[NAV_STYLE_DIRECTORY] == defaults.profile.foreground[NAV_STYLE_DIRECTORY]);
+    assert(!config.show_menu && !config.show_status && !config.show_function_bar);
+    assert(config.column_separator == 1 && !config.pane_show_size && config.size_bytes && config.viewer_wrap);
+    assert(config.pane_show_modified && !strcmp(config.date_format, "%Y"));
+    assert(resolve(&config.keymap, "F6") == NAV_CMD_COPY);
+    assert(resolve(&config.keymap, "Ctrl+C") == resolve(&defaults.keymap, "F5"));
+    assert(resolve(&config.keymap, "F5") == NAV_CMD_MOVE);
+    NavFunctionKeySegment segments[12];
+    size_t count = nav_function_key_layout(120, &config.keymap, NAV_CONTEXT_PANEL, segments, 12);
+    bool copy = false, move = false;
+    for (size_t i = 0; i < count; i++) {
+        if (segments[i].key == 6) copy = segments[i].command == NAV_CMD_COPY && !strcmp(segments[i].label, "Copy");
+        if (segments[i].key == 5) move = segments[i].command == NAV_CMD_MOVE && !strcmp(segments[i].label, "Move");
+    }
+    assert(copy && move);
+    NavCommanderLayout before, after;
+    assert(nav_commander_layout_for_style(120, 30, defaults.profile.style, &before));
+    assert(nav_commander_layout_for_config(120, 30, defaults.profile.style, &defaults, &after));
+    assert(before.body_top == after.body_top && before.body_bottom == after.body_bottom);
+    write_text(path, "[keys]\ncopy=\"F5\"\nmove=\"F5\"\n");
+    assert(nav_config_load_file(&config, path, error, sizeof error) != 0);
+    assert(strstr(error, path) && strstr(error, "conflict"));
+    write_text(path, "[profile]\n[layout]\nshow_menu=\"no\"\n");
+    assert(nav_config_load_file(&config, path, error, sizeof error) != 0 && strstr(error, "boolean"));
+    write_text(path, "[profile\n");
+    assert(nav_config_load_file(&config, path, error, sizeof error) != 0 && strstr(error, path));
+    write_text(path, "[viewer]\nwrap=true\n");
+    assert(nav_config_load_file(&config, path, error, sizeof error) == 0 && config.viewer_wrap);
+    assert(config.show_menu && resolve(&config.keymap, "F5") == NAV_CMD_COPY);
+    assert(unlink(path) == 0);
+    assert(nav_config_load_file(&config, path, error, sizeof error) != 0);
+    assert(strstr(error, path) && strstr(error, "No such file"));
+    /* The normal config is layered, never replaced by an explicit sparse UI profile. */
+    write_text(defaults.config_path, "[viewer]\nline_numbers=true\n");
+    write_text(path, "[profile]\nname=\"Sparse\"\n");
+    assert(nav_config_load_file(&config, path, error, sizeof error) == 0 && config.viewer_line_numbers);
+    assert(config.profile.foreground[NAV_STYLE_TEXT] == defaults.profile.foreground[NAV_STYLE_TEXT]);
+    assert(unlink(path) == 0);
+}
+
 int main(void)
 {
     assert(nav_theme_classic_dos()->format == 2);
     assert(nav_theme_classic_dos()->style == NAV_UI_STYLE_CLASSIC);
     assert_resolved(nav_theme_classic_dos());
+    test_profiles();
     test_legacy();
     test_v2();
     test_builtins();

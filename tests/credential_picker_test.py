@@ -27,7 +27,8 @@ def run(executable, style):
 
         def send(*values):
             for value in values:
-                output.extend(write(fd, value, 0.18, screen=screen))
+                # Allow redraw and encrypted-vault transitions before the next scripted key.
+                output.extend(write(fd, value, 0.4, screen=screen))
 
         def expect(text):
             assert text in screen.text(), (text, screen.text())

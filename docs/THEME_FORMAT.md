@@ -1,16 +1,112 @@
-# Navi8or theme format
+# Navi8or UI profiles
 
-Navi8or discovers themes in `~/.config/nav/themes/` (or
-`$XDG_CONFIG_HOME/nav/themes/`) and selects one from `~/.config/nav/nav.toml`:
+For the live Preferences editor, shortcut visibility and surgical saving, see
+[Profiles and Preferences](PROFILES.md).
 
-```toml
-[theme]
-name = "solar-dark"
+```bash
+nav
+nav -i themes/classic-dos.toml
+nav -i ~/.config/nav/my-profile.toml
 ```
 
-New themes should use format 2. A theme is a flat mapping from semantic UI
-roles to the terminal's 16-colour foreground/background model; it does not
-control pane geometry, menus, or Viewer layout.
+`-i` opens exactly the supplied path, relative to the working directory or
+absolute; errors include the path and reason. Both `-i path` and `-ipath` work.
+Precedence is compiled defaults → normal `nav.toml` → explicit profile → CLI
+left/right directory arguments. Omitted settings inherit the previous layer.
+Live reload reapplies these layers and keeps the running settings on error.
+
+Copy one of `classic-dos`, `solar-dark`, `solar-light`, or `monochrome` from
+`themes/`. Solar Dark remains the default. Profiles are shared across Linux and
+Windows. New UI profiles do not contain repositories, credentials, vault,
+network, cache, transfer or external-editor configuration. Historical full
+configuration files passed through `-i` remain accepted for compatibility;
+prefer keeping operational settings in normal `nav.toml`.
+
+A sparse profile can contain:
+
+```toml
+[profile]
+name = "My profile"
+
+[colors]
+file = "light_gray"
+directory = "yellow"
+selected_fg = "black"
+selected_bg = "cyan"
+
+[layout]
+show_menu = true
+show_status = true
+show_function_bar = true
+show_column_separator = "auto"
+border_style = "single"
+
+[panes]
+show_size = true
+show_modified = true
+directories_first = true
+show_hidden = false
+case_sensitive_sort = false
+view = "full"
+sort = "name"
+size_format = "auto"
+date_format = "%Y-%m-%d %H:%M"
+
+[viewer]
+wrap = false
+line_numbers = false
+current_line = true
+
+[keys]
+copy = ["F5", "Ctrl+C"]
+refresh = "Ctrl+R"
+```
+
+Only override settings you wish to change. Layout also accepts frame `space`
+and `shadow`; border styles follow the frame options below. Pane view is
+`brief`/`full`, sort is `name`/`size`/`date`, size format is `auto`/`bytes`, and
+date format uses `strftime` (1–63 bytes; displayed columns remain bounded).
+Permissions/owner columns and internal editor presentation are not implemented
+and have no profile options. Modal dialogs retain their compact geometry.
+
+Flat color aliases are `foreground`, `background`, `border`, `file`,
+`directory`, `selected_fg/bg`, `menu_fg/bg`, `menu_selected_fg/bg`,
+`status_fg/bg`, and `function_key_fg/bg`. Use the existing named 16-color
+vocabulary. Every existing semantic `[ui.role]` remains supported; equivalent
+`[colors.role]` tables accept `foreground` and `background`. The explicit role
+model below gives finer control, including active/inactive borders and enabled
+function-key colors.
+
+`[keys]` accepts short operation names shown above and canonical command names
+from [the command list](../include/nav_commands.def), quoted when they contain
+dots. Other short names: `help`, `view`, `edit`, `move`, `mkdir`, `delete`,
+`quit`, `pane_switch`, `parent`, `location`, and `menu`. Commands other than
+`none` and `text.insert` can be assigned. The command's existing default
+context is used (Panel when it has none); use modern `[keys.context.commands]` command-to-key tables
+for context-specific control. Legacy `[keys.context]` key-to-command tables
+remain supported only for compatibility.
+
+A string or string array replaces that command's inherited bindings in its
+context; `[]` disables them. Explicit bindings displace inherited bindings
+using the same key, including overlapping two-stroke prefixes. Conflicting
+explicit assignments in overlapping contexts are rejected with command names.
+Independent modal contexts can reuse keys. Flat and context bindings may coexist.
+F1–F12 labels are resolved from the active command map, and menus dispatch the
+same commands as the keyboard.
+
+Keys: F1–F12, Enter, Esc/Escape, Tab, Backspace, Delete, Home, End,
+PgUp/PageUp, PgDn/PageDown, arrows, characters and Ctrl/Alt/Shift modifiers.
+Two-stroke sequences such as `Ctrl+R R` are supported. `show_column_separator`
+also accepts `"auto"` to follow the selected chrome. Insert is supported when emitted by the backend. Modified special keys and some Ctrl/Shift
+combinations depend on terminal/backend reporting; a config cannot make a
+terminal distinguish combinations it does not emit. Text input and menu mnemonics use context-specific command/text handling;
+physical capture and Escape cancellation of an unfinished prefix are specialized
+input behavior.
+
+Normal configuration can still select a palette by `[theme] name = "solar-dark"`
+from `$XDG_CONFIG_HOME/nav/themes/` or `~/.config/nav/themes/`; bundled names
+also resolve from `themes/` in the working directory. Explicit `-i` paths have
+no palette-name lookup or silent fallback.
 
 ## Format 2
 

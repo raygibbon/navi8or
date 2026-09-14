@@ -1,79 +1,82 @@
-[theme]
+# Complete UI profile. Solar Dark is the unchanged startup default.
+[profile]
 format = 2
 name = "Monochrome"
 
 [ui]
 style = "classic"
 
-[ui.header]
+[colors]
+# Semantic role palettes, using Navi8or's sixteen named colours.
+[colors.header]
 foreground = "white"
 background = "black"
 
-[ui.status]
+[colors.status]
 foreground = "light_gray"
 background = "black"
 
-[ui.message]
+[colors.message]
 foreground = "white"
 background = "black"
 
-[ui.text]
+[colors.text]
 foreground = "light_gray"
 background = "black"
 
-[ui.accent]
+[colors.accent]
 foreground = "white"
 background = "black"
 
-[ui.surface_alt]
+[colors.surface_alt]
 foreground = "black"
 background = "white"
 
-[ui.dialog]
+[colors.dialog]
 foreground = "white"
 background = "black"
 
-[ui.dialog_title]
+[colors.dialog_title]
 foreground = "black"
 background = "white"
 
-[ui.text_dim]
+[colors.text_dim]
 foreground = "dark_gray"
 background = "black"
 
-[ui.selection]
+[colors.selection]
 foreground = "black"
 background = "white"
 
-[ui.keybar]
+[colors.keybar]
 foreground = "black"
 background = "white"
 
-[ui.keybar_selected]
+[colors.keybar_selected]
 foreground = "white"
 background = "dark_gray"
 
-[ui.keybar_key]
+[colors.keybar_key]
 foreground = "white"
 background = "black"
 
-[ui.keybar_disabled]
+[colors.keybar_disabled]
 foreground = "dark_gray"
 background = "white"
 
-[ui.menu]
+[colors.menu]
 foreground = "light_gray"
 background = "black"
 
-[ui.menu_disabled]
+[colors.menu_disabled]
 foreground = "dark_gray"
 background = "black"
 
-[ui.menu_selected]
+[colors.menu_selected]
 foreground = "white"
 background = "black"
 
-[ui.menu_selected_disabled]
+[colors.menu_selected_disabled]
 foreground = "dark_gray"
 background = "black"
 
@@ -82,51 +85,51 @@ style = "single"
 space = false
 shadow = false
 
-[ui.viewer_line_number]
+[colors.viewer_line_number]
 foreground = "dark_gray"
 background = "black"
 
-[ui.viewer_search_match]
+[colors.viewer_search_match]
 foreground = "black"
 background = "white"
 
-[ui.progress]
+[colors.progress]
 foreground = "black"
 background = "white"
 
-[ui.pane_title]
+[colors.pane_title]
 foreground = "light_gray"
 background = "black"
 
-[ui.pane_title_active]
+[colors.pane_title_active]
 foreground = "black"
 background = "white"
 
-[ui.background]
+[colors.background]
 foreground = "light_gray"
 background = "black"
 
-[ui.surface]
+[colors.surface]
 foreground = "light_gray"
 background = "black"
 
-[ui.border]
+[colors.border]
 foreground = "dark_gray"
 background = "black"
 
-[ui.border_active]
+[colors.border_active]
 foreground = "black"
 background = "white"
 
-[ui.selection_inactive]
+[colors.selection_inactive]
 foreground = "light_gray"
 background = "black"
 
-[ui.error]
+[colors.error]
 foreground = "white"
 background = "black"
 
-[ui.warning]
+[colors.warning]
 foreground = "light_gray"
 background = "black"
 
@@ -136,3 +139,63 @@ parent = "^"
 selected = ">"
 upload = "^"
 download = "v"
+
+# UI presets; ordinary navigation can change panel/viewer state temporarily.
+[layout]
+show_menu = true
+show_status = true
+show_function_bar = true
+show_column_separator = "auto"
+
+[panes]
+view = "full"
+show_size = true
+show_modified = true
+show_hidden = false
+directories_first = true
+case_sensitive_sort = false
+sort = "name"
+size_format = "auto"
+date_format = "%Y-%m-%d %H:%M"
+
+[viewer]
+line_numbers = true
+wrap = false
+current_line = true
+
+# External editor command/args/wait belong in [editor] in normal nav.toml.
+# UI profiles deliberately do not override operational editor configuration.
+
+# Command = key(s). Omitted commands/context bindings inherit defaults.
+[shortcuts]
+show_function_bar = true
+show_menu_keys = true
+show_dialog_keys = true
+show_help_keys = true
+
+[keys]
+help = ["F1", "Ctrl+H"]
+view = ["F3", "Ctrl+V V"]
+edit = "F4"
+copy = ["F5", "Ctrl+F C"]
+move = ["F6", "Ctrl+F M"]
+mkdir = ["F7", "Ctrl+F K"]
+delete = ["F8", "Ctrl+F D"]
+quit = ["Ctrl+Q", "F10"]
+pane_switch = ["Tab", "Ctrl+P S"]
+parent = ["Backspace", "Ctrl+PgUp", "Alt+Up", "Ctrl+N P"]
+refresh = ["Ctrl+N R", "Ctrl+R R"]
+location = ["Ctrl+L", "Ctrl+N O"]
+menu = ["Ctrl+\\", "F2"]
+preferences = "Ctrl+T P"
+# Download is menu/button driven by default; optional Viewer shortcut:
+# [keys.viewer.commands]
+# download = "Alt+D"
+
+[colors.file]
+foreground = "light_gray"
+background = "black"
+
+[colors.directory]
+foreground = "light_gray"
+background = "black"

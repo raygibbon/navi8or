@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 typedef enum {
-#define NAV_COMMAND(id, name, label) NAV_CMD_##id,
+#define NAV_COMMAND(id, name, label, description) NAV_CMD_##id,
 #include "nav_commands.def"
 #undef NAV_COMMAND
     NAV_CMD_COUNT
@@ -14,7 +14,7 @@ typedef enum {
     NAV_CONTEXT_GLOBAL, NAV_CONTEXT_PANEL, NAV_CONTEXT_VIEWER,
     NAV_CONTEXT_MENU, NAV_CONTEXT_DIALOG, NAV_CONTEXT_CONFIRM,
     NAV_CONTEXT_INFO, NAV_CONTEXT_PICKER, NAV_CONTEXT_VAULT,
-    NAV_CONTEXT_EDITOR, NAV_CONTEXT_TERMINAL, NAV_CONTEXT_COUNT
+    NAV_CONTEXT_EDITOR, NAV_CONTEXT_TERMINAL, NAV_CONTEXT_PREFERENCES, NAV_CONTEXT_COUNT
 } NavInputContext;
 typedef struct { int key; unsigned modifiers; } NavKeyStroke;
 typedef struct {
@@ -35,6 +35,13 @@ typedef struct {
 } NavAction;
 const char *nav_command_name(NavCommand);
 const char *nav_command_label(NavCommand);
+const char *nav_command_description(NavCommand);
+const char *nav_command_config_name(NavCommand);
+bool nav_binding_overlaps(const NavBinding *, const NavBinding *);
+int nav_binding_format(const NavBinding *, char *, size_t);
+int nav_key_capture_normalize(const NavTermEvent *, NavKeyStroke *);
+int nav_keymap_labels(const NavKeymap *, NavInputContext, NavCommand, char *, size_t);
+int nav_keymap_replace(NavKeymap *, NavInputContext, NavCommand, const char *const *, size_t, bool, char *, size_t);
 NavCommand nav_command_parse(const char *);
 int nav_key_parse(const char *, NavKeyStroke *);
 int nav_key_format(NavKeyStroke, char *, size_t);

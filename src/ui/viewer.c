@@ -14,11 +14,14 @@ typedef struct
     const NavEntry *entry;
     const NavConfig *config;
     bool highlight_current;
+    NavProvider *provider;
+    const NavLocation *origin;
 } ViewerScreen;
 
 #define VIEW_ITEM(label, command, key) {label, command, NULL, false, false, key}
 #define VIEW_SEPARATOR {NULL, 0, NULL, true, true, 0}
 static const NavUiMenuItem viewer_file_items[] = {
+    VIEW_ITEM("Download / Save Copy...", NAV_CMD_DOWNLOAD, 'd'),
     VIEW_ITEM("Properties", NAV_CMD_PROPERTIES, 'p'),
     VIEW_ITEM("Close Viewer", NAV_CMD_VIEWER_CLOSE, 'c')};
 static const NavUiMenuItem viewer_view_items[] = {
@@ -45,10 +48,10 @@ static NavUiMenu viewer_menus[] = {
     {"Options", viewer_options_items, sizeof viewer_options_items / sizeof *viewer_options_items, 0},
     {"Help", viewer_help_items, sizeof viewer_help_items / sizeof *viewer_help_items, 0}};
 
-static size_t viewer_page(void)
+static size_t viewer_page(const ViewerScreen *screen)
 {
     int height = nav_term_height();
-    NavShellLayout layout = nav_shell_layout(nav_term_width(), height);
+    NavShellLayout layout = nav_shell_layout_for_config(nav_term_width(), height, screen->config);
     int rows = layout.workspace_bottom - layout.workspace_top;
     return rows > 0 ? (size_t)rows : 1;
 }
@@ -114,6 +117,20 @@ static void draw_fragment(NavViewer *viewer, const char *line, size_t length,
     }
 }
 
+static void viewer_hints(const ViewerScreen *screen, bool compact, char *output, size_t size)
+{
+    static const NavCommand commands[] = {NAV_CMD_VIEWER_CLOSE, NAV_CMD_FIND, NAV_CMD_FIND_NEXT, NAV_CMD_FIND_PREVIOUS, NAV_CMD_GOTO, NAV_CMD_WRAP, NAV_CMD_LINES, NAV_CMD_DOWNLOAD};
+    static const char *const labels[] = {"Back", "Find", "Next", "Prev", "GoTo", "Wrap", "Lines", "Download"};
+    output[0] = 0;
+    if (!nav_ui_show_dialog_keys()) return;
+    for (size_t i = 0; i < 8; i++) {
+        if ((compact && i >= 4 && i < 7) || (i == 7 && !screen->origin)) continue;
+        char key[80]; if (!nav_ui_hint_key(NAV_CONTEXT_VIEWER, commands[i], i == 2 || i == 3, key, sizeof key)) continue;
+        size_t used = strlen(output);
+        if (used < size) snprintf(output + used, size - used, "  %s %s", key, labels[i]);
+    }
+}
+
 static void draw_viewer(void *data)
 {
     ViewerScreen *screen = data;
@@ -121,7 +138,8 @@ static void draw_viewer(void *data)
     bool cursor_mode = viewer->source->cursor_line != NULL;
     size_t count = cursor_mode ? 0 : viewer->source->line_count(viewer->source);
     int width = nav_term_width(), height = nav_term_height();
-    NavShellLayout layout = nav_shell_layout(width, height);
+    NavShellLayout layout = nav_shell_layout_for_config(width, height, screen->config);
+    char hints[256]; viewer_hints(screen, cursor_mode, hints, sizeof hints);
     nav_term_clear(NAV_STYLE_BACKGROUND);
     if (width < 20 || height < 8)
     {
@@ -129,8 +147,8 @@ static void draw_viewer(void *data)
         nav_term_hide_cursor();
         return;
     }
-    nav_ui_draw_menu_bar(viewer_menus, sizeof viewer_menus / sizeof *viewer_menus);
-    size_t gutter = nav_viewer_line_number_width(viewer), page = viewer_page();
+    if (layout.menu_row >= 0) nav_ui_draw_menu_bar(viewer_menus, sizeof viewer_menus / sizeof *viewer_menus);
+    size_t gutter = nav_viewer_line_number_width(viewer), page = viewer_page(screen);
     if (cursor_mode && viewer->line_numbers) {
         prepare_remote_gutter(viewer, page);
         gutter = nav_viewer_line_number_width(viewer);
@@ -223,11 +241,11 @@ static void draw_viewer(void *data)
                            (long double)offset * 100.0L / (long double)total :
                            100.0L) : 0;
             snprintf(status, sizeof status,
-                     " Byte %llu%s%llu Col %zu%s%u%%%s%s  Esc Back  / Find  F5 Next  F6 Prev",
+                     " Byte %llu%s%llu Col %zu%s%u%%%s%s%s",
                      (unsigned long long)offset, known ? "/" : "",
                      (unsigned long long)(known ? total : 0),
                      viewer->horizontal_offset + 1, known ? " " : "", percent,
-                     viewer->status[0] ? "  " : "", viewer->status);
+                     viewer->status[0] ? "  " : "", viewer->status, hints);
         }
     } else {
         size_t logical = viewer->top_line;
@@ -256,11 +274,11 @@ static void draw_viewer(void *data)
         }
         size_t shown = count ? viewer->current_line + 1 : 0;
         unsigned percent = count ? (unsigned)(shown * 100 / count) : 0;
-        snprintf(status, sizeof status, " Ln %zu/%zu Col %zu %u%%  Esc Back  / Find  F5 Next  F6 Prev  g GoTo  w Wrap  l Lines%s%s",
+        snprintf(status, sizeof status, " Ln %zu/%zu Col %zu %u%%%s%s%s",
                  shown, count, viewer->horizontal_offset + 1, percent,
-                 viewer->status[0] ? "  " : "", viewer->status);
+                 hints, viewer->status[0] ? "  " : "", viewer->status);
     }
-    nav_ui_text(0, layout.status_row, width, status, NAV_STYLE_STATUS);
+    if (layout.status_row >= 0) nav_ui_text(0, layout.status_row, width, status, NAV_STYLE_STATUS);
     nav_ui_command_bar(layout.command_row, width, NAV_CONTEXT_VIEWER, NULL, NULL);
     nav_term_hide_cursor();
 }
@@ -276,7 +294,7 @@ static void find_prompt(ViewerScreen *screen)
         snprintf(screen->viewer.search, sizeof screen->viewer.search, "%s", original);
         return;
     }
-    nav_viewer_find(&screen->viewer, 1, viewer_page(), &wrapped);
+    nav_viewer_find(&screen->viewer, 1, viewer_page(screen), &wrapped);
 }
 
 static void goto_prompt(ViewerScreen *screen)
@@ -292,7 +310,7 @@ static void goto_prompt(ViewerScreen *screen)
         snprintf(screen->viewer.status, sizeof screen->viewer.status, "Invalid line number");
         return;
     }
-    nav_viewer_goto_line(&screen->viewer, (size_t)line, viewer_page());
+    nav_viewer_goto_line(&screen->viewer, (size_t)line, viewer_page(screen));
     screen->viewer.match_line = SIZE_MAX;
     screen->viewer.match_length = 0;
     snprintf(screen->viewer.status, sizeof screen->viewer.status, "Line %zu", screen->viewer.current_line + 1);
@@ -318,12 +336,15 @@ static bool viewer_menu(ViewerScreen *screen)
 
 static bool viewer_dispatch(ViewerScreen *screen, NavCommand command)
 {
-    size_t page = viewer_page();
+    size_t page = viewer_page(screen);
     bool wrapped = false;
     switch (command)
     {
     case NAV_CMD_QUIT: nav_ui_request_quit(); return true;
     case NAV_CMD_MENU: return viewer_menu(screen);
+    case NAV_CMD_DOWNLOAD:
+        if (screen->origin) nav_ui_download(screen->provider, screen->entry, screen->origin, screen->config, draw_viewer, screen);
+        break;
     case NAV_CMD_UP: nav_viewer_move(&screen->viewer, -1, page); break;
     case NAV_CMD_DOWN: nav_viewer_move(&screen->viewer, 1, page); break;
     case NAV_CMD_PAGE_UP: nav_viewer_page(&screen->viewer, -1, page); break;
@@ -375,7 +396,7 @@ static bool viewer_dispatch(ViewerScreen *screen, NavCommand command)
     return false;
 }
 
-int nav_view_file(NavProvider *provider, const NavEntry *entry, const NavConfig *config)
+int nav_view_file_from(NavProvider *provider, const NavEntry *entry, const NavConfig *config, const NavLocation *origin)
 {
     char error[256] = {0};
     bool binary = false;
@@ -404,7 +425,9 @@ int nav_view_file(NavProvider *provider, const NavEntry *entry, const NavConfig 
             return 0;
         }
     }
-    ViewerScreen screen = {.entry = entry, .config = config, .highlight_current = !config || config->viewer_current_line};
+    NavLocation launch_location = {0};
+    if (origin) launch_location = *origin;
+    ViewerScreen screen = {.provider = provider, .origin = origin ? &launch_location : NULL, .entry = entry, .config = config, .highlight_current = !config || config->viewer_current_line};
     nav_viewer_init(&screen.viewer, source);
     if (config)
     {
@@ -429,3 +452,6 @@ int nav_view_file(NavProvider *provider, const NavEntry *entry, const NavConfig 
     source->close(source);
     return 0;
 }
+
+int nav_view_file(NavProvider *provider, const NavEntry *entry, const NavConfig *config)
+{ return nav_view_file_from(provider, entry, config, NULL); }

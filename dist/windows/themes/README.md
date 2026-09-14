@@ -1,31 +1,19 @@
-# Navi8or themes
+# Navi8or UI profiles
 
-All shipped themes use Navi8or's semantic format-2 schema while preserving the
-intent of their original palettes.
+The four shipped profiles are:
 
-Included:
-- Navi8or Classic
-- Amber CRT
-- Phosphor
-- Commander
-- Carbon
-- Slate
-- Paper
-- Nordic
-- Violet Night
-- Monochrome
-- DOS VGA
-- Workbench
-- CDE
-- Solar Dark
-- Solar Light
+- `classic-dos.toml`: Classic DOS chrome and blue palette.
+- `solar-dark.toml`: the unchanged Modern default.
+- `solar-light.toml`: Modern light palette.
+- `monochrome.toml`: monochrome presentation.
 
-Themes use `[theme]`, semantic `[ui.*]` role tables, and optional `[symbols]`.
-The small `[ui] style = "modern" | "classic"` profile selects Navi8or-owned
-chrome; colours remain role based. Frame appearance is configured separately by
-`[ui.frame]` and does not become an arbitrary geometry language.
+Run `nav -i themes/classic-dos.toml`, or copy any file to your own location and
+edit the explicit layout, panes, viewer, shortcut and primary key defaults.
+Modern syntax is `[profile]`, `[colors.role]` and command-to-key `[keys]`.
+Legacy `[theme]` and `[ui.*]` palette syntax remains supported for compatibility.
+External `[editor]` command settings belong in normal `nav.toml`, not UI profiles.
+See [profile configuration](../docs/THEME_FORMAT.md).
 
-Note: these files assume Navi8or accepts the same named colour vocabulary
-as the supplied Classic TDX-derived theme. See
-[`../docs/THEME_FORMAT.md`](../docs/THEME_FORMAT.md) for roles, fallbacks, and
-format-1 compatibility.
+Use Options → Preferences to preview changes. Save/Save As creates a personal
+profile through the platform config-directory abstraction. These four templates
+are protected from normal saves. See [editing profiles](../docs/PROFILES.md).

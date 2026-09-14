@@ -7,6 +7,17 @@ NavShellLayout nav_shell_layout(int width, int height)
         .status_row = height - 2, .command_row = height - 1};
 }
 
+NavShellLayout nav_shell_layout_for_config(int width, int height, const NavConfig *config)
+{
+    if (!config) return nav_shell_layout(width, height);
+    return (NavShellLayout){.width = width, .height = height,
+        .menu_row = config->show_menu ? 0 : -1,
+        .workspace_top = config->show_menu ? 1 : 0,
+        .workspace_bottom = height - 1 - config->show_status - config->show_function_bar,
+        .status_row = config->show_status ? height - 1 - config->show_function_bar : -1,
+        .command_row = config->show_function_bar ? height - 1 : -1};
+}
+
 bool nav_commander_layout_for_style(int width, int height, NavUiStyle style,
                                     NavCommanderLayout *layout)
 {
@@ -35,6 +46,27 @@ bool nav_commander_layout_for_style(int width, int height, NavUiStyle style,
     layout->pane_width[1] = width - layout->pane_x[1];
     return width >= 20 && height >= 8 && layout->body_height >= 1 &&
            layout->pane_width[0] > 0 && layout->pane_width[1] > 0;
+}
+
+bool nav_commander_layout_for_config(int width, int height, NavUiStyle style,
+                                     const NavConfig *config, NavCommanderLayout *layout)
+{
+    if (!config) return nav_commander_layout_for_style(width, height, style, layout);
+    nav_commander_layout_for_style(width, height, style, layout);
+    NavShellLayout shell = nav_shell_layout_for_config(width, height, config);
+    layout->top_row = layout->menu_row = shell.menu_row;
+    layout->pane_title_row = shell.workspace_top;
+    layout->pane_location_row = shell.workspace_top + 1;
+    layout->pane_column_header_row = shell.workspace_top + 2;
+    bool separator = config->column_separator < 0 ? style == NAV_UI_STYLE_CLASSIC : config->column_separator != 0;
+    layout->pane_column_separator_row = separator ? shell.workspace_top + 3 : -1;
+    layout->body_top = shell.workspace_top + 3 + separator;
+    layout->summary_row = shell.workspace_bottom;
+    layout->status_row = shell.status_row;
+    layout->key_bar_row = shell.command_row;
+    layout->body_height = layout->summary_row - layout->body_top;
+    layout->body_bottom = layout->summary_row - 1;
+    return width >= 20 && height >= 8 && layout->body_height >= 1;
 }
 
 bool nav_commander_layout(int width, int height, NavCommanderLayout *layout)
