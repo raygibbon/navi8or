@@ -36,11 +36,12 @@ if ! test -e "$prefix/lib/libsmb2.a" || test "$0" -nt "$prefix/lib/libsmb2.a"; t
     sed -i -e 's/^inline int writev(/static inline int writev(/' \
         -e 's/^inline int readv(/static inline int readv(/' \
         "$work/libsmb2-b3d560c02fb1268320d2fd1c17fe841b0d93b85f/lib/compat.h"
+    # Match Navi8or's Windows 7+ API baseline (WSAPoll needs Vista+ headers).
     # Select libsmb2's Windows socket ABI and use MinGW's stdio functions
     # instead of the pinned source's conflicting asprintf/vasprintf shims.
     cmake -S "$work/libsmb2-b3d560c02fb1268320d2fd1c17fe841b0d93b85f" -B "$work/smb-build" \
         -DCMAKE_TOOLCHAIN_FILE="$root/cmake/mingw-w64.cmake" -DCMAKE_INSTALL_PREFIX="$prefix" \
-        '-DCMAKE_C_FLAGS=-D_WINDOWS -Dasprintf=asprintf -Dvasprintf=vasprintf' \
+        '-DCMAKE_C_FLAGS=-D_WINDOWS -D_WIN32_WINNT=0x0601 -Dasprintf=asprintf -Dvasprintf=vasprintf' \
         -DBUILD_SHARED_LIBS=OFF -DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF -DENABLE_LIBDCERPC=OFF
     cmake --build "$work/smb-build" -j"$jobs"
     cmake --install "$work/smb-build"

@@ -3,7 +3,7 @@
 set -eu
 fail() { echo "error: $*" >&2; exit 1; }
 action=${1:-build}
-case "$action" in create|build|clean|shell|remove) ;; *) fail "expected create, build, clean, shell or remove" ;; esac
+case "$action" in create|deps|deps-clean|build|clean|shell|remove) ;; *) fail "expected create, deps, deps-clean, build, clean, shell or remove" ;; esac
 podman=${PODMAN:-podman}
 container=${BUILD_CONTAINER:-navi8or-build}
 test -n "$container" || fail 'set BUILD_CONTAINER to your existing Ubuntu 22.04 container name (list with podman ps -a)'
@@ -45,20 +45,17 @@ test "$(stat -c '%u:%g' "$probe/owner")" = "$uid:$gid" || fail 'container UID/GI
 rm -rf "$probe"
 trap - EXIT HUP INT TERM
 case "$action" in
+    deps)
+        $podman exec --user "$user" --workdir "$workdir" "$container" make TARGET=native USE_LINUX_DEPS=1 linux-deps
+        ;;
+    deps-clean)
+        $podman exec --user "$user" --workdir "$workdir" "$container" make TARGET=native USE_LINUX_DEPS=1 linux-deps-clean
+        ;;
     build)
-        # Force a fresh Linux build: host objects may have incompatible ABIs.
-        # Preserve the separate Windows output tree.
-        $podman exec --user "$user" --workdir "$workdir" "$container" sh -ec '
-            if test -d build; then find build -mindepth 1 -maxdepth 1 ! -name windows -exec rm -rf {} +; fi
-            rm -f nav
-            exec make TARGET=native
-        '
+        $podman exec --user "$user" --workdir "$workdir" "$container" make TARGET=native USE_LINUX_DEPS=1
         ;;
     clean)
-        $podman exec --user "$user" --workdir "$workdir" "$container" sh -ec '
-            if test -d build; then find build -mindepth 1 -maxdepth 1 ! -name windows -exec rm -rf {} +; fi
-            rm -f nav
-        '
+        $podman exec --user "$user" --workdir "$workdir" "$container" make TARGET=native USE_LINUX_DEPS=1 clean
         ;;
     shell)
         exec $podman exec -it --user "$user" --workdir "$workdir" "$container" /bin/bash

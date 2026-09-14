@@ -11,10 +11,33 @@ PKG_CONFIG ?= pkg-config
 BUILD_CONTAINER ?= navi8or-build
 BUILD_IMAGE ?= ubuntu:22.04
 PODMAN ?= podman
-.PHONY: container-create container-build container-clean container-shell container-remove
-container-create container-build container-clean container-shell container-remove:
+.PHONY: container-create container-deps container-deps-clean container-build container-clean container-shell container-remove
+container-create container-deps container-deps-clean container-build container-clean container-shell container-remove:
 	@BUILD_CONTAINER='$(BUILD_CONTAINER)' BUILD_IMAGE='$(BUILD_IMAGE)' PODMAN='$(PODMAN)' sh scripts/container-dev.sh $(@:container-%=%)
 
+# Linux owns application libraries; macOS keeps its existing native discovery.
+USE_LINUX_DEPS ?= $(if $(filter Linux,$(shell uname -s)),1,0)
+ifeq ($(USE_LINUX_DEPS),1)
+LINUX_DEPS_PREFIX := $(CURDIR)/build/linux-deps
+LINUX_DEPS_STAMP := $(LINUX_DEPS_PREFIX)/.stamp
+LINUX_ARCHIVES := $(addprefix $(LINUX_DEPS_PREFIX)/lib/lib,curl.a ssl.a crypto.a z.a sodium.a smb2.a)
+CURL_CFLAGS := -isystem $(LINUX_DEPS_PREFIX)/include
+CURL_LIBS := $(addprefix $(LINUX_DEPS_PREFIX)/lib/lib,curl.a ssl.a crypto.a z.a) -pthread -ldl
+SODIUM_LIBS := $(LINUX_DEPS_PREFIX)/lib/libsodium.a -pthread
+SMB2_LIBS := $(LINUX_DEPS_PREFIX)/lib/libsmb2.a
+OBJECT_DIR := build/linux
+.PHONY: linux-deps linux-deps-clean linux-deps-force
+linux-deps: $(LINUX_DEPS_STAMP)
+$(LINUX_DEPS_STAMP): linux-deps-force
+	@CC='$(CC)' sh scripts/build-linux-deps.sh
+linux-deps-clean:
+	@mkdir -p build
+	flock build/.linux-deps.lock sh -c 'rm -rf build/linux-deps build/linux nav'
+$(LINUX_ARCHIVES): | $(LINUX_DEPS_STAMP)
+	@test -s $@
+verify-curl verify-libsodium verify-libsmb2: $(LINUX_DEPS_STAMP)
+else
+OBJECT_DIR := build
 # Select one working configuration source for both compile and link flags.
 CURL_CONFIG := $(shell \
 	if $(PKG_CONFIG) --cflags --libs libcurl >/dev/null 2>&1; then \
@@ -57,6 +80,7 @@ CURL_CFLAGS := $(if $(CURL_CONFIG),$(shell $(CURL_CONFIG) --cflags))
 CURL_LIBS := $(if $(CURL_CONFIG),$(shell $(CURL_CONFIG) --libs))
 SODIUM_CFLAGS := $(if $(SODIUM_CONFIG),$(shell $(SODIUM_CONFIG) --cflags))
 SODIUM_LIBS := $(if $(SODIUM_CONFIG),$(shell $(SODIUM_CONFIG) --libs))
+endif
 override CPPFLAGS += -D_POSIX_C_SOURCE=200809L -Iinclude -Ithird_party $(CURL_CFLAGS) $(SODIUM_CFLAGS) $(SMB2_CFLAGS)
 override LDLIBS += $(CURL_LIBS) $(SODIUM_LIBS) $(SMB2_LIBS)
 CFLAGS ?= -O2 -g
@@ -64,32 +88,32 @@ CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
 CFLAGS += -MMD -MP
 
 SOURCES := $(filter-out %_win32.c src/platform/windows.c,$(shell find src -name '*.c' | sort))
-OBJECTS := $(SOURCES:src/%.c=build/%.o)
-DEPS := $(OBJECTS:.o=.d) build/toml.d
+OBJECTS := $(SOURCES:src/%.c=$(OBJECT_DIR)/%.o)
+DEPS := $(OBJECTS:.o=.d) $(OBJECT_DIR)/toml.d
 INPUT_SOURCES := $(wildcard src/input/*.c)
-SODIUM_OBJECTS := build/credential/vault.o
+SODIUM_OBJECTS := $(OBJECT_DIR)/credential/vault.o
 
 -include $(DEPS)
 
 .PHONY: all clean check core-test control-test terminal-test viewer-test config-test input-test input-integration-test theme-test vault-test provider-test smb-path-test http-test resize-test credential-picker-test asan asan-check verify-vendor verify-curl verify-libsodium verify-libsmb2 dist dist-check
 all: nav
 
-nav: $(OBJECTS) build/toml.o | verify-curl verify-libsodium verify-libsmb2
-	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+nav: $(OBJECTS) $(OBJECT_DIR)/toml.o $(LINUX_ARCHIVES) | verify-curl verify-libsodium verify-libsmb2
+	$(CC) $(LDFLAGS) -o $@ $(OBJECTS) $(OBJECT_DIR)/toml.o $(LDLIBS)
 
 build:
 	mkdir -p $@
 
-build/%.o: src/%.c
+$(OBJECT_DIR)/%.o: src/%.c $(LINUX_DEPS_STAMP)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 # Check development configuration before compiling dependency consumers.
-build/provider/http.o: | verify-curl
-build/provider/smb.o: | verify-libsmb2
+$(OBJECT_DIR)/provider/http.o: | verify-curl
+$(OBJECT_DIR)/provider/smb.o: | verify-libsmb2
 $(SODIUM_OBJECTS): | verify-libsodium
 
-build/toml.o: third_party/toml.c third_party/toml.h
+$(OBJECT_DIR)/toml.o: third_party/toml.c third_party/toml.h $(LINUX_DEPS_STAMP)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
@@ -142,6 +166,14 @@ dist-check: dist
 	! test -e "$$temp/navi8or/nav"; \
 	$(MAKE) -C "$$temp/navi8or" check
 
+ifeq ($(USE_LINUX_DEPS),1)
+.PHONY: linux-deps-test
+linux-deps-test: nav | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/linux_deps_test.c $(LDFLAGS) -o build/linux-deps-test $(LDLIBS)
+	python3 tests/linux_deps_test.py ./build/linux-deps-test
+check: linux-deps-test
+endif
+
 core-test: | build
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) tests/core_test.c tests/fake_provider.c src/path.c src/provider/local.c src/commander.c src/ui/layout.c $(INPUT_SOURCES) src/transfer/transfer.c $(LDFLAGS) -o build/core-test
 	./build/core-test
@@ -187,8 +219,16 @@ smb-path-test: | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/smb_path_test.c src/provider/smb_path.c $(LDFLAGS) -o build/smb-path-test
 	./build/smb-path-test
 
-http-test: verify-curl verify-libsodium verify-libsmb2 | build
-	$(CC) $(CPPFLAGS) -Itests -Isrc $(CFLAGS) tests/http_provider_test.c src/provider/smb.c src/provider/smb_path.c src/provider/registry.c src/provider/http.c src/provider/local.c src/config.c $(INPUT_SOURCES) src/credential/store.c src/credential/vault.c src/platform/secure_file_posix.c src/platform/posix.c src/commander.c src/ui/layout.c src/path.c src/view/source.c src/view/viewer.c src/transfer/transfer.c third_party/toml.c $(LDFLAGS) -o build/http-provider-test $(LDLIBS)
+HTTP_TEST_SOURCES := src/provider/smb.c src/provider/smb_path.c src/provider/registry.c src/provider/http.c src/provider/local.c src/config.c $(INPUT_SOURCES) src/credential/store.c src/credential/vault.c src/platform/secure_file_posix.c src/platform/posix.c src/commander.c src/ui/layout.c src/path.c src/view/source.c src/view/viewer.c src/transfer/transfer.c third_party/toml.c
+
+.PHONY: http-listing-test
+http-listing-test: nav verify-curl verify-libsodium verify-libsmb2 | build
+	$(CC) $(CPPFLAGS) -Itests -Isrc -DNAV_HTTP_LISTING_TESTING $(CFLAGS) tests/http_listing_test.c $(HTTP_TEST_SOURCES) $(LDFLAGS) -o build/http-listing-test $(LDLIBS)
+	./build/http-listing-test
+	python3 tests/http_listing_integration_test.py ./build/http-listing-test ./nav
+
+http-test: http-listing-test verify-curl verify-libsodium verify-libsmb2 | build
+	$(CC) $(CPPFLAGS) -Itests -Isrc $(CFLAGS) tests/http_provider_test.c $(HTTP_TEST_SOURCES) $(LDFLAGS) -o build/http-provider-test $(LDLIBS)
 	python3 tests/http_integration_test.py ./build/http-provider-test ./nav
 
 credential-picker-test: nav
@@ -206,6 +246,7 @@ asan-check:
 	$(MAKE) CFLAGS='-O2 -g -std=c11 -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer' LDFLAGS='-fsanitize=address,undefined' check
 
 clean:
-	rm -rf build nav dist/windows
+	@test ! -d build || find build -mindepth 1 -maxdepth 1 ! -name linux-deps ! -name .linux-deps.lock ! -name windows -exec rm -rf {} +
+	rm -f nav
 
 endif

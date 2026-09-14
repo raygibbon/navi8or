@@ -19,108 +19,114 @@ Navi8or currently targets Linux/POSIX. The compatible termbox2 single-header
 source is vendored under `third_party/termbox2`; HTTP repositories use libcurl,
 and the encrypted credential Vault uses libsodium.
 
-On Debian, install the build dependency with:
+Linux builds own their application libraries; distro `-dev` packages are not
+used. termbox2 and TOML keep their vendored C build paths. Windows retains its
+separate dependency script and MinGW build.
+
+### Canonical Linux development environment
+
+Run from either Bazzite or Debian, in the repository root:
 
 ```sh
-sudo apt install build-essential pkg-config libcurl4-openssl-dev libsodium-dev
-```
-
-```sh
-make
-./nav
-./nav /var/log /tmp
-```
-
-Development checks:
-
-```sh
-make check
-make resize-test
-make asan-check
-make verify-vendor
-make dist
-make dist-check
-make http-test
-make vault-test
-```
-
-### Linux development with Ubuntu 22.04 and rootless Podman
-
-Run from the repository root on either Bazzite or Debian:
-
-```sh
-make container-create     # initially: create and install build dependencies
+make container-create     # initially, or to ensure bootstrap tools are installed
+make container-deps       # optional: container-build also builds missing dependencies
 make container-build
 ./nav
 ```
 
-`container-create` uses `ubuntu:22.04` to create the persistent `navi8or-build`
-container, bind-mounting `$PWD` at `/src` with `:z` for SELinux compatibility:
+The persistent rootless `navi8or-build` container uses `ubuntu:22.04`. No
+Containerfile or custom image is built. Creation binds the current checkout:
 
 ```sh
 podman run -d --name navi8or-build --userns=host \
     -v "$PWD:/src:z" -w /src ubuntu:22.04 sleep infinity
 ```
 
-There is no Containerfile or custom image build. Packages and the installed
-libsmb2 library persist in the container. Repeating `container-create` reuses
-it and ensures dependencies are installed; it never recreates an existing
-container. A stopped container is started automatically. `BUILD_CONTAINER`,
-`BUILD_IMAGE`, and `PODMAN` are defined once near the top of the native Makefile;
-rootless Podman is required, without sudo. Each machine creates its own local
-Ubuntu 22.04 container. Apt updates mean the package patch versions may differ
-if creation happens at different times; this is a common distribution baseline,
-not a locked reproducible toolchain.
+Every action verifies that `/src` is this checkout's writable bind mount.
+Existing containers are reused and started if stopped. `BUILD_CONTAINER`,
+`BUILD_IMAGE`, and `PODMAN` are configurable near the top of the Makefile.
+For another checkout use a different `BUILD_CONTAINER`, or remove the original
+container from its original checkout. Each machine creates its local container.
+Ubuntu 22.04 supplies glibc 2.35 and bootstrap tools (compiler, make, pkg-config,
+CMake, autotools, Perl, Git, curl, certificates, Python, file/binutils). Apt patch
+versions can differ; this pins application sources, not the entire toolchain.
+Previously installed application development packages can remain in an existing
+container, but are not searched or linked by this build.
+
+Builds run `podman exec --user 0:0 --workdir /src navi8or-build make
+TARGET=native USE_LINUX_DEPS=1`. Rootless container UID/GID 0 map to the invoking
+host user; a write probe checks ownership. Sources remain editable on the host,
+and `build/` and `nav` appear there immediately. Repeated builds are incremental.
 
 ```sh
-make container-clean     # remove Linux outputs, preserve Windows outputs
-make container-shell     # interactive bash in /src; run make check here
-make container-remove    # delete the container and its installed dependencies
+make container-shell         # in /src: make check; make resize-test
+make container-clean         # application/test outputs; keep dependencies and Windows
+make container-deps-clean    # discard dependencies, Linux objects and nav; keep cache
+make container-remove        # remove container; host sources/build outputs remain
 ```
 
-Every action verifies that `/src` is a writable bind mount of the current
-repository. A container created from another checkout produces a clear error;
-use `make BUILD_CONTAINER=another-name container-create` for a second checkout,
-or remove the old container from its original checkout before creating it here.
-Removing a container leaves host sources and build outputs intact.
+### Pinned Linux application libraries
 
-Compilation uses `podman exec --user 0:0 --workdir /src navi8or-build` to run
-`make TARGET=native`. With rootless Podman's default mapping, container UID/GID
-0 map to the invoking host user, not host root. A write probe verifies actual
-host ownership before building. Sources stay on the host; `build/` and `nav`
-appear there immediately. Each `container-build` clears stale Linux outputs to
-prevent reuse of host-built objects while preserving `build/windows` and
-`dist/windows`. Native `make` and Windows builds are unchanged. Run `make clean`
-before switching back to native Linux compilation.
+`scripts/build-linux-deps.sh` holds exact versions, source URLs and SHA256 hashes:
+curl 8.22.0, libsodium 1.0.22, libsmb2 7.0.0 at immutable revision
+`b3d560c02fb1268320d2fd1c17fe841b0d93b85f`, OpenSSL 3.5.8, and zlib 1.3.2.
+Downloads are cached in `.deps/linux-sources/`; every archive used for a rebuild
+is verified before extraction. A mismatch fails, including a corrupted cached
+archive. Remove that archive and retry; never disable verification.
 
-The setup installs build-essential, pkg-config, cmake, Python 3, curl, CA
-certificates, file/binutils, and Ubuntu's libcurl/OpenSSL/libsodium development
-packages. Ubuntu 22.04 does not package libsmb2, so setup builds the same pinned
-upstream revision as the Windows dependency script in a temporary container
-folder and installs it in `/usr/local`. Only libsmb2 is static, avoiding a new
-custom runtime library requirement; Kerberos/GSSAPI and DCE/RPC are disabled
-(Navi8or uses NTLMSSP). Windows dependency scripts are unchanged. termbox2 and
-TOML remain vendored C sources. libcurl, libsodium, OpenSSL and libc remain
-dynamic; the application is not fully static.
+Sources, compilation trees, headers, static archives and pkg-config metadata
+are regenerated under `build/linux-deps/{src,build,include,lib}`. None are source
+artifacts to commit. Nothing is installed into `/usr` or `/usr/local`. A stamp
+checks the script/configuration, compiler, architecture, glibc and absolute
+prefix; changed build environments rebuild dependencies and Linux objects.
+Unchanged builds check the stamp and required artifacts without recompiling.
 
-Verify on both the build environment and destination host:
+Linux links explicit `libcurl.a`, `libsodium.a`, `libsmb2.a`, `libssl.a`,
+`libcrypto.a` and `libz.a` paths. glibc remains dynamic. Curl enables HTTP/HTTPS,
+OpenSSL, zlib, IPv6, threaded DNS, HTTP/HTTPS/SOCKS proxies and authentication;
+LDAP, SSH, IDN, PSL, brotli, zstd, HTTP/2 and HTTP/3 dependencies are disabled.
+libsmb2 keeps NTLMSSP; Kerberos/GSSAPI and DCE/RPC are disabled. OpenSSL has
+built-in providers and no external provider modules or automatic global config
+loading. This does not provide system FIPS/provider integration.
+
+TLS verification remains enabled according to the existing provider settings.
+No CA bundle is embedded: OpenSSL loads the running system's hashed
+`/etc/ssl/certs` directory. `SSL_CERT_FILE` and `SSL_CERT_DIR` override its default
+trust paths, including a corporate CA bundle/directory. Ensure corporate roots
+are installed in each system/container that performs HTTPS requests. Fedora
+systems whose trust store is elsewhere can set `SSL_CERT_FILE` to
+`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`. Proxy behavior is unchanged: libcurl honors
+`http_proxy` (lowercase for security), `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY`
+and their supported lowercase equivalents; uppercase `HTTP_PROXY` has never
+been accepted by libcurl.
+
+Clean canonical build and verification:
 
 ```sh
+make container-create
+make container-deps-clean
+make container-deps
+make container-build
+podman exec -w /src navi8or-build make check
 file ./nav
 ldd ./nav
 readelf -d ./nav
 ```
 
-A common Ubuntu baseline removes Fedora-specific compile/link inputs, but
-runtime SONAMEs and symbol versions must still be available on the destination.
-The installed Ubuntu `libsodium.a` could be selected through `SODIUM_LIBS` in a
-future change to remove its runtime requirement; static libraries must be
-rebuilt for security updates. This workflow leaves libsodium dynamic to keep
-the immediate change focused.
+Native Linux `make` builds the same owned dependencies with the native compiler;
+`make linux-deps` and `make linux-deps-clean` are its explicit dependency commands.
+A native build on a newer distro can raise the glibc baseline: release binaries
+must use the Ubuntu container. macOS retains native library discovery.
+`USE_LINUX_DEPS=0` retains the previous system-library build as an explicit escape
+hatch (run `make clean` before switching modes); its binaries do not have the application-library portability guarantee.
 
-Ubuntu 22.04 compilation also uses the older libcurl protocol bitmask API
-with the same HTTP/HTTPS restrictions, and suppresses ignored-I/O-result
-warnings only within the vendored termbox2 implementation.
+To upgrade, deliberately update the version/revision, URL if needed, and SHA256
+in `scripts/build-linux-deps.sh`, checking official release checksums/signatures
+where supplied. Rebuild with `make container-deps-clean`, then
+`make container-build`, run `make check` in the container and repeat linker/ABI
+inspection and destination smoke tests. Static security fixes require releasing
+a rebuilt executable. The result is architecture-specific and still depends on
+the target's glibc/kernel ABI, DNS configuration and runtime trust store.
 
 ## Implemented local v0.1 features
 
@@ -202,8 +208,17 @@ downloads a file body.
 Repository v1 recognizes ordinary nginx/Apache-like `<a href>` directory
 indexes. It decodes URL-escaped leaf names and accepts relative or same-root
 absolute links. Query links, external links, unsupported schemes, and links
-escaping the configured root are ignored. Listing responses are limited to 4
-MB, redirects to five hops, connection time to three seconds, and total listing
+escaping the configured root are ignored. Directory HTML is parsed incrementally
+with 16 KiB bounds on unfinished tags and rows; there is no whole-document size limit.
+nginx-style metadata after each closing anchor supplies optional exact byte sizes
+and `DD-Mon-YYYY HH:MM` modified times. Missing, malformed, or rounded size values
+remain unknown. HTML wall-clock dates use the client's local timezone because
+the format does not identify the server's timezone. Explicit stat operations
+also read Last-Modified from their existing HEAD response; browsing never issues
+per-entry metadata requests.
+Duplicate resolved URLs use a lightweight hash index. Individual oversized tags
+or rows abort the listing, and incomplete final tags are ignored. Redirects are limited
+to five hops, connection time to three seconds, and total listing
 time to ten seconds.
 
 F3 and Enter open remote files in the existing read-only Viewer. The HTTP view

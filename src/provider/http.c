@@ -6,7 +6,8 @@
 #include <string.h>
 #include <strings.h>
 
-#define HTTP_LISTING_LIMIT (4u * 1024u * 1024u)
+#define HTTP_TAG_LIMIT (16u * 1024u)
+#define HTTP_ROW_LIMIT (16u * 1024u)
 #define HTTP_REDIRECT_LIMIT 5L
 
 typedef struct
@@ -22,10 +23,38 @@ typedef struct
 
 typedef struct
 {
-    char *data;
-    size_t length, capacity;
-    bool exceeded;
-} HttpResponse;
+    HttpProvider *http;
+    NavListing *listing;
+    CURL *transport;
+    char current[NAV_URL_MAX];
+    char tag[HTTP_TAG_LIMIT + 1];
+    size_t length;
+    char quote;
+    char row[HTTP_ROW_LIMIT + 1];
+    size_t row_length, row_bytes, entry_index;
+    bool has_entry, metadata_text;
+    unsigned comment_dashes;
+    size_t *slots; /* entry index + 1; indexes survive listing reallocations */
+    size_t slot_count, used;
+    bool started, comment, memory_error, oversized, outside_root;
+} HttpListingParser;
+
+#ifdef NAV_HTTP_LISTING_TESTING
+static size_t listing_allocations_remaining = SIZE_MAX;
+void nav_http_test_listing_allocations(size_t remaining)
+{
+    listing_allocations_remaining = remaining;
+}
+#endif
+
+static void *listing_allocate(void *old, size_t bytes)
+{
+#ifdef NAV_HTTP_LISTING_TESTING
+    if (!listing_allocations_remaining) return NULL;
+    if (listing_allocations_remaining != SIZE_MAX) listing_allocations_remaining--;
+#endif
+    return realloc(old, bytes);
+}
 
 typedef struct
 {
@@ -96,7 +125,9 @@ static int listing_append(NavListing *listing, const NavEntry *entry)
 {
     if (listing->count == listing->capacity) {
         size_t capacity = listing->capacity ? listing->capacity * 2 : 32;
-        NavEntry *items = realloc(listing->items, capacity * sizeof *items);
+        if (capacity < listing->capacity || capacity > SIZE_MAX / sizeof(NavEntry))
+            return -1;
+        NavEntry *items = listing_allocate(listing->items, capacity * sizeof *items);
         if (!items) return -1;
         listing->items = items;
         listing->capacity = capacity;
@@ -363,24 +394,47 @@ static int http_parent(NavProvider *provider, const NavLocation *location,
     return http_location(provider, parent, output, error, error_size);
 }
 
-static const char *find_case(const char *start, const char *needle)
+static size_t listing_hash(const char *url)
 {
-    size_t length = strlen(needle);
-    for (const char *cursor = start; *cursor; cursor++)
-        if (!strncasecmp(cursor, needle, length)) return cursor;
-    return NULL;
+    size_t hash = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)url; *p; p++)
+        hash = (hash ^ *p) * 16777619u;
+    return hash;
 }
 
-static bool listing_contains(const NavListing *listing, const char *resource_id)
+static size_t listing_slot(const HttpListingParser *parser, const char *url)
 {
-    for (size_t index = 0; index < listing->count; index++)
-        if (!strcmp(listing->items[index].resource_id, resource_id)) return true;
-    return false;
+    size_t slot = listing_hash(url) & (parser->slot_count - 1);
+    while (parser->slots[slot] &&
+           strcmp(parser->listing->items[parser->slots[slot] - 1].resource_id, url))
+        slot = (slot + 1) & (parser->slot_count - 1);
+    return slot;
+}
+
+static int listing_grow_index(HttpListingParser *parser)
+{
+    if (parser->slot_count && parser->used < parser->slot_count / 2) return 0;
+    size_t count = parser->slot_count ? parser->slot_count * 2 : 64;
+    if (count < parser->slot_count || count > SIZE_MAX / sizeof(size_t)) return -1;
+    size_t *slots = listing_allocate(NULL, count * sizeof *slots);
+    if (!slots) return -1;
+    memset(slots, 0, count * sizeof *slots);
+    size_t *old = parser->slots, old_count = parser->slot_count;
+    parser->slots = slots;
+    parser->slot_count = count;
+    for (size_t index = 0; index < old_count; index++) {
+        if (!old[index]) continue;
+        const char *url = parser->listing->items[old[index] - 1].resource_id;
+        slots[listing_slot(parser, url)] = old[index];
+    }
+    free(old);
+    return 0;
 }
 
 static int add_link(HttpProvider *http, const char *current, const char *href,
-                    NavListing *listing)
+                    HttpListingParser *parser)
 {
+    NavListing *listing = parser->listing;
     char resolved[NAV_URL_MAX], path[NAV_URL_MAX], name[NAV_NAME_MAX];
     CURLU *url;
     char *url_path = NULL, *decoded = NULL;
@@ -391,15 +445,16 @@ static int add_link(HttpProvider *http, const char *current, const char *href,
         strchr(href, '#') || !strcmp(href, "../") || !strcmp(href, ".."))
         return 0;
     if (resolve_url(current, href, resolved, sizeof resolved, path, sizeof path) ||
-        !url_is_within_root(http, resolved) || !strcmp(resolved, current) ||
-        listing_contains(listing, resolved))
+        !url_is_within_root(http, resolved) || !strcmp(resolved, current))
         return 0;
     directory = href[strlen(href) - 1] == '/';
     url = curl_url();
-    if (!url || curl_url_set(url, CURLUPART_URL, resolved, 0) ||
-        curl_url_get(url, CURLUPART_PATH, &url_path, 0)) {
+    if (!url) return -1;
+    CURLUcode code = curl_url_set(url, CURLUPART_URL, resolved, 0);
+    if (!code) code = curl_url_get(url, CURLUPART_PATH, &url_path, 0);
+    if (code) {
         curl_url_cleanup(url);
-        return 0;
+        return code == CURLUE_OUT_OF_MEMORY ? -1 : 0;
     }
     snprintf(path, sizeof path, "%s", url_path);
     curl_free(url_path);
@@ -408,8 +463,13 @@ static int add_link(HttpProvider *http, const char *current, const char *href,
     while (length > 1 && path[length - 1] == '/') path[--length] = 0;
     const char *leaf = strrchr(path, '/');
     leaf = leaf ? leaf + 1 : path;
-    decoded = curl_easy_unescape(http->easy, leaf, 0, NULL);
-    if (!decoded || !decoded[0] || !strcmp(decoded, ".") ||
+    int decoded_length = 0;
+    decoded = curl_easy_unescape(http->easy, leaf, 0, &decoded_length);
+    if (!decoded) return -1;
+    bool invalid_name = false;
+    for (int index = 0; index < decoded_length; index++)
+        if (iscntrl((unsigned char)decoded[index])) invalid_name = true;
+    if (invalid_name || !decoded[0] || !strcmp(decoded, ".") ||
         !strcmp(decoded, "..") || strchr(decoded, '/') || strchr(decoded, '\\') ||
         strlen(decoded) >= sizeof name) {
         curl_free(decoded);
@@ -420,99 +480,303 @@ static int add_link(HttpProvider *http, const char *current, const char *href,
     snprintf(entry.name, sizeof entry.name, "%s", name);
     snprintf(entry.resource_id, sizeof entry.resource_id, "%s", resolved);
     if (directory) entry.flags |= NAV_ENTRY_DIR;
-    return listing_append(listing, &entry);
+    if (listing_grow_index(parser)) return -1;
+    size_t slot = listing_slot(parser, resolved);
+    if (parser->slots[slot]) {
+        parser->entry_index = parser->slots[slot] - 1;
+        parser->has_entry = true;
+        return 0;
+    }
+    if (listing_append(listing, &entry)) return -1;
+    parser->slots[slot] = listing->count;
+    parser->used++;
+    parser->entry_index = listing->count - 1;
+    parser->has_entry = true;
+    return 0;
 }
+
+static int listing_start(HttpListingParser *parser, const char *current)
+{
+    NavEntry parent = {0};
+    if (strlen(current) >= sizeof parser->current) return -1;
+    snprintf(parser->current, sizeof parser->current, "%s", current);
+    snprintf(parent.name, sizeof parent.name, "..");
+    snprintf(parent.resource_id, sizeof parent.resource_id, "%s", current);
+    parent.flags = NAV_ENTRY_DIR | NAV_ENTRY_PARENT;
+    if (listing_append(parser->listing, &parent)) return -1;
+    parser->started = true;
+    return 0;
+}
+
+static bool listing_size(const char *text, uint64_t *size)
+{
+    uint64_t value = 0;
+    if (!text || !*text) return false;
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if (!isdigit(*p) || value > (UINT64_MAX - (*p - '0')) / 10) return false;
+        value = value * 10 + (*p - '0');
+    }
+    *size = value;
+    return true;
+}
+
+static bool listing_date(const char *date, const char *clock, time_t *modified)
+{
+    static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    int day, year, hour, minute, consumed = 0, month = -1;
+    char name[4];
+    if (strlen(date) != 11 || strlen(clock) != 5 ||
+        sscanf(date, "%2d-%3[A-Za-z]-%4d%n", &day, name, &year, &consumed) != 3 ||
+        consumed != 11 || sscanf(clock, "%2d:%2d%n", &hour, &minute, &consumed) != 2 ||
+        consumed != 5 || year < 1900 || day < 1 || day > 31 || hour < 0 || hour > 23 ||
+        minute < 0 || minute > 59) return false;
+    for (int index = 0; index < 12; index++)
+        if (!strcasecmp(name, months[index])) month = index;
+    if (month < 0) return false;
+    /* nginx HTML has no timezone. Interpret its wall clock in the client's
+     * local timezone, matching autoindex_localtime on when zones agree. */
+    struct tm value = {.tm_year = year - 1900, .tm_mon = month, .tm_mday = day,
+                       .tm_hour = hour, .tm_min = minute, .tm_isdst = -1};
+    time_t stamp = mktime(&value);
+    struct tm check;
+    if (!nav_platform_localtime(&stamp, &check)) return false;
+    if (check.tm_year != year - 1900 || check.tm_mon != month || check.tm_mday != day ||
+        check.tm_hour != hour || check.tm_min != minute) return false;
+    *modified = stamp;
+    return true;
+}
+
+static void listing_finish_row(HttpListingParser *parser)
+{
+    if (parser->has_entry && parser->metadata_text) {
+        char *parts[3] = {0}, *cursor = parser->row;
+        size_t count = 0;
+        parser->row[parser->row_length] = 0;
+        while (*cursor && count < 3) {
+            while (*cursor && isspace((unsigned char)*cursor)) cursor++;
+            if (!*cursor) break;
+            parts[count++] = cursor;
+            while (*cursor && !isspace((unsigned char)*cursor)) cursor++;
+            if (*cursor) *cursor++ = 0;
+        }
+        NavEntry *entry = &parser->listing->items[parser->entry_index];
+        uint64_t size;
+        time_t modified;
+        if (count >= 2 && !(entry->flags & NAV_ENTRY_MODIFIED_KNOWN) &&
+            listing_date(parts[0], parts[1], &modified)) {
+            entry->modified = modified;
+            entry->flags |= NAV_ENTRY_MODIFIED_KNOWN;
+        }
+        const char *size_text = count >= 3 ? parts[2] : count == 1 ? parts[0] : NULL;
+        if (!(entry->flags & NAV_ENTRY_SIZE_KNOWN) && listing_size(size_text, &size)) {
+            entry->size = size;
+            entry->flags |= NAV_ENTRY_SIZE_KNOWN;
+        }
+    }
+    parser->has_entry = parser->metadata_text = false;
+    parser->row_length = parser->row_bytes = 0;
+}
+
+static bool listing_tag_is(const HttpListingParser *parser, const char *name)
+{
+    size_t length = strlen(name);
+    return parser->length >= length + 2 &&
+           !strncasecmp(parser->tag + 1, name, length) &&
+           (isspace((unsigned char)parser->tag[length + 1]) ||
+            parser->tag[length + 1] == '>' || parser->tag[length + 1] == '/');
+}
+
+/* Parse one complete tag. The transport and standalone helper share this code. */
+static int listing_tag(HttpListingParser *parser)
+{
+    char *attribute = parser->tag + 2;
+    char *end = parser->tag + parser->length - 1;
+    if (listing_tag_is(parser, "tr") || listing_tag_is(parser, "/tr") ||
+        listing_tag_is(parser, "br") || listing_tag_is(parser, "/pre")) {
+        listing_finish_row(parser);
+        return 0;
+    }
+    if (listing_tag_is(parser, "/a")) {
+        parser->metadata_text = parser->has_entry;
+        return 0;
+    }
+    if (!listing_tag_is(parser, "a")) {
+        if (parser->metadata_text && parser->row_length < HTTP_ROW_LIMIT)
+            parser->row[parser->row_length++] = ' ';
+        return 0;
+    }
+    listing_finish_row(parser);
+    parser->row_bytes = parser->length;
+    while (attribute < end) {
+        char *name_start, *value_start;
+        size_t name_length, value_length;
+        char quote = 0;
+        while (attribute < end && isspace((unsigned char)*attribute)) attribute++;
+        name_start = attribute;
+        while (attribute < end &&
+               (isalnum((unsigned char)*attribute) || *attribute == '-' ||
+                *attribute == '_')) attribute++;
+        name_length = (size_t)(attribute - name_start);
+        while (attribute < end && isspace((unsigned char)*attribute)) attribute++;
+        if (attribute >= end || *attribute != '=') {
+            if (attribute == name_start) attribute++;
+            continue;
+        }
+        attribute++;
+        while (attribute < end && isspace((unsigned char)*attribute)) attribute++;
+        if (attribute < end && (*attribute == '"' || *attribute == '\''))
+            quote = *attribute++;
+        value_start = attribute;
+        while (attribute < end &&
+               (quote ? *attribute != quote : !isspace((unsigned char)*attribute)))
+            attribute++;
+        value_length = (size_t)(attribute - value_start);
+        if (quote && attribute < end) attribute++;
+        if (name_length == 4 && !strncasecmp(name_start, "href", 4)) {
+            /* Reject oversized URLs rather than accidentally linking a prefix. */
+            if (value_length >= NAV_URL_MAX) return 0;
+            /* The completed tag is ours; terminate href in place. */
+            value_start[value_length] = 0;
+            return add_link(parser->http, parser->current, value_start, parser);
+        }
+    }
+    return 0;
+}
+
+static size_t receive_listing_data(char *data, size_t size, size_t count,
+                                    void *userdata)
+{
+    HttpListingParser *parser = userdata;
+    if (size && count > SIZE_MAX / size) {
+        parser->oversized = true;
+        return 0;
+    }
+    size_t amount = size * count;
+    if (parser->transport) {
+        long status = 0;
+        char *effective = NULL;
+        curl_easy_getinfo(parser->transport, CURLINFO_RESPONSE_CODE, &status);
+        /* Redirect/error bodies must not become directory entries. */
+        if (status < 200 || status >= 300) return amount;
+        if (!parser->started) {
+            curl_easy_getinfo(parser->transport, CURLINFO_EFFECTIVE_URL, &effective);
+            if (!effective || !url_is_within_root(parser->http, effective)) {
+                parser->outside_root = true;
+                return 0;
+            }
+            if (listing_start(parser, effective)) {
+                parser->memory_error = true;
+                return 0;
+            }
+        }
+    }
+    for (size_t index = 0; index < amount; index++) {
+        char ch = data[index];
+        if (parser->has_entry && ++parser->row_bytes > HTTP_ROW_LIMIT) {
+            parser->oversized = true;
+            return 0;
+        }
+        if (parser->comment) {
+            if (ch == '>' && parser->comment_dashes == 2) {
+                parser->comment = false;
+                parser->comment_dashes = 0;
+            } else if (ch == '-') {
+                if (parser->comment_dashes < 2) parser->comment_dashes++;
+            } else parser->comment_dashes = 0;
+            continue;
+        }
+        if (!parser->length) {
+            if (ch != '<') {
+                if (parser->metadata_text) {
+                    if (ch == '\n' || ch == '\r') listing_finish_row(parser);
+                    else parser->row[parser->row_length++] = ch;
+                }
+                continue;
+            }
+        } else if (ch == '<' && !parser->quote) {
+            /* Recover from an unfinished, unquoted tag before a fresh tag. */
+            parser->length = 0;
+        }
+        if (parser->length == HTTP_TAG_LIMIT) {
+            parser->oversized = true;
+            return 0;
+        }
+        parser->tag[parser->length++] = ch;
+        if (parser->length == 4 && !memcmp(parser->tag, "<!--", 4)) {
+            if (parser->metadata_text)
+                parser->row[parser->row_length++] = ' ';
+            parser->comment = true;
+            parser->length = 0;
+            continue;
+        }
+        if (ch == parser->quote) parser->quote = 0;
+        else if (!parser->quote && (ch == '"' || ch == '\'')) parser->quote = ch;
+        if (ch == '>' && !parser->quote) {
+            parser->tag[parser->length] = 0;
+            if (listing_tag(parser)) {
+                parser->memory_error = true;
+                return 0;
+            }
+            parser->length = 0;
+        }
+    }
+    return amount;
+}
+
+static void listing_error(const HttpListingParser *parser, char *error,
+                          size_t error_size)
+{
+    snprintf(error, error_size, "%s", parser->memory_error ?
+             "out of memory parsing HTTP directory listing" :
+             parser->outside_root ? "HTTP redirect left repository root" :
+             "HTTP directory listing row/tag exceeds 16 KiB parser limit");
+}
+
+static int parse_listing_chunks(NavProvider *provider, const char *current,
+                                const char *html, size_t length, size_t chunk,
+                                NavListing *listing, char *error, size_t error_size)
+{
+    if (!provider || !provider->context || !current || !html || !listing || !chunk) {
+        snprintf(error, error_size, "invalid HTTP directory listing");
+        return -1;
+    }
+    HttpListingParser parser = {.http = provider->context, .listing = listing};
+    nav_listing_free(listing);
+    if (listing_start(&parser, current)) parser.memory_error = true;
+    for (size_t offset = 0; offset < length && !parser.memory_error && !parser.oversized;) {
+        size_t amount = length - offset < chunk ? length - offset : chunk;
+        if (receive_listing_data((char *)html + offset, 1, amount, &parser) != amount)
+            break;
+        offset += amount;
+    }
+    listing_finish_row(&parser);
+    free(parser.slots);
+    if (parser.memory_error || parser.oversized) {
+        listing_error(&parser, error, error_size);
+        nav_listing_free(listing);
+        return -1;
+    }
+    /* An incomplete final tag is ignored; only complete tags emit entries. */
+    return 0;
+}
+
+#ifdef NAV_HTTP_LISTING_TESTING
+int nav_http_test_parse_chunks(NavProvider *provider, const char *current,
+                              const char *html, size_t length, size_t chunk,
+                              NavListing *listing, char *error, size_t error_size)
+{
+    return parse_listing_chunks(provider, current, html, length, chunk,
+                                listing, error, error_size);
+}
+#endif
 
 int nav_http_parse_directory_html(NavProvider *provider, const char *current,
                                   const char *html, NavListing *listing,
                                   char *error, size_t error_size)
 {
-    HttpProvider *http;
-    NavEntry parent = {0};
-    const char *cursor;
-    if (!provider || !provider->context || !current || !html || !listing) {
-        snprintf(error, error_size, "invalid HTTP directory listing");
-        return -1;
-    }
-    http = provider->context;
-    nav_listing_free(listing);
-    snprintf(parent.name, sizeof parent.name, "..");
-    snprintf(parent.resource_id, sizeof parent.resource_id, "%s", current);
-    parent.flags = NAV_ENTRY_DIR | NAV_ENTRY_PARENT;
-    if (listing_append(listing, &parent)) goto memory_error;
-    cursor = html;
-    while ((cursor = find_case(cursor, "<a"))) {
-        const char *tag_end = strchr(cursor, '>'), *attribute;
-        char href[NAV_URL_MAX] = {0};
-        if (!tag_end) break;
-        attribute = cursor + 2;
-        while (attribute < tag_end) {
-            const char *name_start, *value_start;
-            size_t name_length, value_length;
-            char quote = 0;
-            while (attribute < tag_end && isspace((unsigned char)*attribute)) attribute++;
-            name_start = attribute;
-            while (attribute < tag_end &&
-                   (isalnum((unsigned char)*attribute) || *attribute == '-' ||
-                    *attribute == '_')) attribute++;
-            name_length = (size_t)(attribute - name_start);
-            while (attribute < tag_end && isspace((unsigned char)*attribute)) attribute++;
-            if (attribute >= tag_end || *attribute != '=') {
-                if (attribute == name_start) attribute++;
-                continue;
-            }
-            attribute++;
-            while (attribute < tag_end && isspace((unsigned char)*attribute)) attribute++;
-            if (attribute < tag_end && (*attribute == '"' || *attribute == '\''))
-                quote = *attribute++;
-            value_start = attribute;
-            while (attribute < tag_end &&
-                   (quote ? *attribute != quote : !isspace((unsigned char)*attribute)))
-                attribute++;
-            value_length = (size_t)(attribute - value_start);
-            if (quote && attribute < tag_end) attribute++;
-            if (name_length == 4 && !strncasecmp(name_start, "href", 4)) {
-                if (value_length >= sizeof href) value_length = sizeof href - 1;
-                memcpy(href, value_start, value_length);
-                href[value_length] = 0;
-                break;
-            }
-        }
-        if (href[0] && add_link(http, current, href, listing)) goto memory_error;
-        cursor = tag_end + 1;
-    }
-    return 0;
-memory_error:
-    nav_listing_free(listing);
-    snprintf(error, error_size, "out of memory parsing HTTP directory listing");
-    return -1;
-}
-
-static size_t receive_data(char *data, size_t size, size_t count, void *userdata)
-{
-    HttpResponse *response = userdata;
-    size_t amount;
-    if (size && count > SIZE_MAX / size) {
-        response->exceeded = true;
-        return 0;
-    }
-    amount = size * count;
-    if (amount > HTTP_LISTING_LIMIT - response->length) {
-        response->exceeded = true;
-        return 0;
-    }
-    if (response->length + amount + 1 > response->capacity) {
-        size_t capacity = response->capacity ? response->capacity * 2 : 16384;
-        while (capacity < response->length + amount + 1) capacity *= 2;
-        char *next = realloc(response->data, capacity);
-        if (!next) return 0;
-        response->data = next;
-        response->capacity = capacity;
-    }
-    memcpy(response->data + response->length, data, amount);
-    response->length += amount;
-    response->data[response->length] = 0;
-    return amount;
+    return parse_listing_chunks(provider, current, html, html ? strlen(html) : 0,
+                                SIZE_MAX, listing, error, error_size);
 }
 
 static size_t read_header(char *data, size_t size, size_t count, void *userdata)
@@ -1342,7 +1606,7 @@ static int http_stat(NavProvider *provider, const char *resource_id,
     CURL *easy;
     CURLcode code;
     long status = 0;
-    curl_off_t length = -1;
+    curl_off_t length = -1, modified = -1;
     char *effective = NULL;
     NavResolvedCredential credential = {0};
     if (!resource_id || !entry || !url_is_within_root(http, resource_id)) {
@@ -1357,10 +1621,12 @@ static int http_stat(NavProvider *provider, const char *resource_id,
         return -1;
     }
     curl_easy_setopt(easy, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(easy, CURLOPT_FILETIME, 1L);
     code = curl_easy_perform(easy);
     curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_getinfo(easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &length);
     curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &effective);
+    curl_easy_getinfo(easy, CURLINFO_FILETIME_T, &modified);
     if (code != CURLE_OK || status < 200 || status >= 300 || !effective ||
         !url_is_within_root(http, effective)) {
         if (code != CURLE_OK)
@@ -1382,6 +1648,10 @@ static int http_stat(NavProvider *provider, const char *resource_id,
         entry->size = (uint64_t)length;
         entry->flags |= NAV_ENTRY_SIZE_KNOWN;
     }
+    if (modified != -1 && (curl_off_t)(time_t)modified == modified) {
+        entry->modified = (time_t)modified;
+        entry->flags |= NAV_ENTRY_MODIFIED_KNOWN;
+    }
     curl_easy_cleanup(easy);
     nav_resolved_credential_free(&credential);
     return 0;
@@ -1391,58 +1661,60 @@ static int http_list(NavProvider *provider, const char *resource_id, bool hidden
                      NavListing *listing, char *error, size_t error_size)
 {
     HttpProvider *http = provider->context;
-    HttpResponse response = {0};
+    NavListing pending = {0};
+    HttpListingParser parser = {.http = http, .listing = &pending,
+                                .transport = http->easy};
     CURLcode code;
     long status = 0;
     char *effective = NULL;
     NavResolvedCredential credential = {0};
+    int result = -1;
     (void)hidden;
     curl_easy_reset(http->easy);
     if (configure_request(http, http->easy, resource_id, &credential,
                           error, error_size))
-        return -1;
-    curl_easy_setopt(http->easy, CURLOPT_WRITEFUNCTION, receive_data);
-    curl_easy_setopt(http->easy, CURLOPT_WRITEDATA, &response);
+        goto finish;
+    curl_easy_setopt(http->easy, CURLOPT_WRITEFUNCTION, receive_listing_data);
+    curl_easy_setopt(http->easy, CURLOPT_WRITEDATA, &parser);
     curl_easy_setopt(http->easy, CURLOPT_TIMEOUT, 10L);
     code = curl_easy_perform(http->easy);
     curl_easy_getinfo(http->easy, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_getinfo(http->easy, CURLINFO_EFFECTIVE_URL, &effective);
+    if (parser.memory_error || parser.oversized || parser.outside_root) {
+        listing_error(&parser, error, error_size);
+        goto finish;
+    }
     if (code != CURLE_OK) {
-        if (response.exceeded)
-            snprintf(error, error_size, "HTTP directory listing exceeds 4 MB");
-        else if (code == CURLE_PEER_FAILED_VERIFICATION ||
-                 code == CURLE_SSL_CACERT_BADFILE)
+        if (code == CURLE_PEER_FAILED_VERIFICATION || code == CURLE_SSL_CACERT_BADFILE)
             snprintf(error, error_size, "TLS verification failed: %s",
                      curl_easy_strerror(code));
         else
             snprintf(error, error_size, "HTTP request failed: %s",
                      curl_easy_strerror(code));
-        free(response.data);
-        nav_resolved_credential_free(&credential);
-        return -1;
+        goto finish;
     }
     if (status < 200 || status >= 300) {
         if (!authentication_status_error(http, status, error, error_size))
             snprintf(error, error_size, "HTTP server returned status %ld", status);
-        free(response.data);
-        nav_resolved_credential_free(&credential);
-        return -1;
+        goto finish;
     }
     if (!effective || !url_is_within_root(http, effective)) {
         snprintf(error, error_size, "HTTP redirect left repository root");
-        free(response.data);
-        nav_resolved_credential_free(&credential);
-        return -1;
+        goto finish;
     }
-    if (!response.data) response.data = calloc(1, 1);
-    if (!response.data) {
-        snprintf(error, error_size, "out of memory receiving HTTP listing");
-        nav_resolved_credential_free(&credential);
-        return -1;
+    if (!parser.started && listing_start(&parser, effective)) {
+        parser.memory_error = true;
+        listing_error(&parser, error, error_size);
+        goto finish;
     }
-    int result = nav_http_parse_directory_html(provider, effective, response.data,
-                                                listing, error, error_size);
-    free(response.data);
+    listing_finish_row(&parser);
+    nav_listing_free(listing);
+    *listing = pending;
+    memset(&pending, 0, sizeof pending);
+    result = 0;
+finish:
+    free(parser.slots);
+    nav_listing_free(&pending);
     nav_resolved_credential_free(&credential);
     return result;
 }

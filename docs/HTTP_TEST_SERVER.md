@@ -719,6 +719,23 @@ Ordinary browsing:
 - does not download highlighted file bodies
 - does not issue one metadata request per visible entry
 
+With the configuration above, nginx HTML rows end with
+`</a> DD-Mon-YYYY HH:MM exact-byte-size`, or `-` for a directory size.
+Navi8or parses those optional fields from the streamed listing itself. It leaves
+missing/invalid fields unknown. Dates are minute-resolution wall clocks without
+a timezone; Navi8or interprets them in the client's local zone. With
+`autoindex_localtime on`, server and client zones should agree for accurate
+absolute timestamps. Explicit HEAD stat uses Last-Modified, which identifies UTC.
+
+nginx's optional `autoindex_format json` produces objects with `name`, `type`,
+GMT `mtime`, and file `size`. Supporting this structured format would avoid HTML
+column heuristics and timezone ambiguity, but is a future extension, not a
+requirement for browsing. This change retains general HTML support and does not
+change nginx configuration or add JSON parsing. A future adapter should select
+supported JSON by response Content-Type/configuration and retain HTML fallback;
+nginx chooses autoindex format through its directive, not an automatic Accept
+header negotiation.
+
 F3 explicitly performs bounded remote reads.
 
 F5 explicitly streams complete files between providers.
