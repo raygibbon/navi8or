@@ -178,9 +178,18 @@ static int configure_request(HttpProvider *http, CURL *easy,
     curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
     curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 15L);
     curl_easy_setopt(easy, CURLOPT_USERAGENT, "Navi8or/0.1");
+#if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
     curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR,
                      http->credential_name[0] ? "https" : "http,https");
+#else
+    /* Ubuntu 22.04's curl 7.81 uses bitmasks for the same restrictions. */
+    curl_easy_setopt(easy, CURLOPT_PROTOCOLS,
+                     (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+    curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS,
+                     http->credential_name[0] ? (long)CURLPROTO_HTTPS :
+                     (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+#endif
     curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, http->tls_verify ? 1L : 0L);
     curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, http->tls_verify ? 2L : 0L);
     if (!http->credential_name[0]) return 0;

@@ -7,6 +7,14 @@ PKG_CONFIG ?= pkg-config
 .CURDIR := $(shell pwd)
 .DEFAULT_GOAL := all
 
+# Persistent rootless Ubuntu build environment (no custom image).
+BUILD_CONTAINER ?= navi8or-build
+BUILD_IMAGE ?= ubuntu:22.04
+PODMAN ?= podman
+.PHONY: container-create container-build container-clean container-shell container-remove
+container-create container-build container-clean container-shell container-remove:
+	@BUILD_CONTAINER='$(BUILD_CONTAINER)' BUILD_IMAGE='$(BUILD_IMAGE)' PODMAN='$(PODMAN)' sh scripts/container-dev.sh $(@:container-%=%)
+
 # Select one working configuration source for both compile and link flags.
 CURL_CONFIG := $(shell \
 	if $(PKG_CONFIG) --cflags --libs libcurl >/dev/null 2>&1; then \

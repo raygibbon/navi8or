@@ -4,7 +4,16 @@
  * invalidation stay at this boundary. Persistent UI policy belongs above it.
  */
 #define TB_IMPL
+#if defined(__GNUC__)
+/* Vendored resize-pipe I/O intentionally ignores results; Ubuntu's fortified
+ * libc marks these calls warn_unused_result. Keep strict warnings in our code. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
+#endif
 #include "termbox2/termbox2.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 #include "cp437.h"
 #include "nav_terminal.h"
 #include "nav_theme.h"

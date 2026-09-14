@@ -44,6 +44,84 @@ make http-test
 make vault-test
 ```
 
+### Linux development with Ubuntu 22.04 and rootless Podman
+
+Run from the repository root on either Bazzite or Debian:
+
+```sh
+make container-create     # initially: create and install build dependencies
+make container-build
+./nav
+```
+
+`container-create` uses `ubuntu:22.04` to create the persistent `navi8or-build`
+container, bind-mounting `$PWD` at `/src` with `:z` for SELinux compatibility:
+
+```sh
+podman run -d --name navi8or-build --userns=host \
+    -v "$PWD:/src:z" -w /src ubuntu:22.04 sleep infinity
+```
+
+There is no Containerfile or custom image build. Packages and the installed
+libsmb2 library persist in the container. Repeating `container-create` reuses
+it and ensures dependencies are installed; it never recreates an existing
+container. A stopped container is started automatically. `BUILD_CONTAINER`,
+`BUILD_IMAGE`, and `PODMAN` are defined once near the top of the native Makefile;
+rootless Podman is required, without sudo. Each machine creates its own local
+Ubuntu 22.04 container. Apt updates mean the package patch versions may differ
+if creation happens at different times; this is a common distribution baseline,
+not a locked reproducible toolchain.
+
+```sh
+make container-clean     # remove Linux outputs, preserve Windows outputs
+make container-shell     # interactive bash in /src; run make check here
+make container-remove    # delete the container and its installed dependencies
+```
+
+Every action verifies that `/src` is a writable bind mount of the current
+repository. A container created from another checkout produces a clear error;
+use `make BUILD_CONTAINER=another-name container-create` for a second checkout,
+or remove the old container from its original checkout before creating it here.
+Removing a container leaves host sources and build outputs intact.
+
+Compilation uses `podman exec --user 0:0 --workdir /src navi8or-build` to run
+`make TARGET=native`. With rootless Podman's default mapping, container UID/GID
+0 map to the invoking host user, not host root. A write probe verifies actual
+host ownership before building. Sources stay on the host; `build/` and `nav`
+appear there immediately. Each `container-build` clears stale Linux outputs to
+prevent reuse of host-built objects while preserving `build/windows` and
+`dist/windows`. Native `make` and Windows builds are unchanged. Run `make clean`
+before switching back to native Linux compilation.
+
+The setup installs build-essential, pkg-config, cmake, Python 3, curl, CA
+certificates, file/binutils, and Ubuntu's libcurl/OpenSSL/libsodium development
+packages. Ubuntu 22.04 does not package libsmb2, so setup builds the same pinned
+upstream revision as the Windows dependency script in a temporary container
+folder and installs it in `/usr/local`. Only libsmb2 is static, avoiding a new
+custom runtime library requirement; Kerberos/GSSAPI and DCE/RPC are disabled
+(Navi8or uses NTLMSSP). Windows dependency scripts are unchanged. termbox2 and
+TOML remain vendored C sources. libcurl, libsodium, OpenSSL and libc remain
+dynamic; the application is not fully static.
+
+Verify on both the build environment and destination host:
+
+```sh
+file ./nav
+ldd ./nav
+readelf -d ./nav
+```
+
+A common Ubuntu baseline removes Fedora-specific compile/link inputs, but
+runtime SONAMEs and symbol versions must still be available on the destination.
+The installed Ubuntu `libsodium.a` could be selected through `SODIUM_LIBS` in a
+future change to remove its runtime requirement; static libraries must be
+rebuilt for security updates. This workflow leaves libsodium dynamic to keep
+the immediate change focused.
+
+Ubuntu 22.04 compilation also uses the older libcurl protocol bitmask API
+with the same HTTP/HTTPS restrictions, and suppresses ignored-I/O-result
+warnings only within the vendored termbox2 implementation.
+
 ## Implemented local v0.1 features
 
 - Two independently navigable local panes with selection scrolling and history.
