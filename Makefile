@@ -179,7 +179,7 @@ core-test: | build
 	./build/core-test
 
 control-test: | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/control_test.c $(INPUT_SOURCES) src/ui/core/area.c src/ui/core/field.c src/ui/core/menu_layout.c src/ui/core/menu_state.c src/ui/core/view_state.c $(LDFLAGS) -o build/control-test
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/control_test.c $(INPUT_SOURCES) src/ui/core/area.c src/ui/core/field.c src/clipboard.c src/ui/core/menu_layout.c src/ui/core/menu_state.c src/ui/core/view_state.c $(LDFLAGS) -o build/control-test
 	./build/control-test
 
 terminal-test: | build
@@ -211,6 +211,12 @@ location-test: nav
 
 .PHONY: location-test
 check: location-test
+
+clipboard-test: nav control-test terminal-test
+	python3 tests/clipboard_integration_test.py ./nav
+
+.PHONY: clipboard-test
+check: clipboard-test
 
 preferences-integration-test: nav
 	python3 tests/preferences_integration_test.py ./nav

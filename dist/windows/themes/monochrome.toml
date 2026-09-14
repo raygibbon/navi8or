@@ -199,3 +199,10 @@ background = "black"
 [colors.directory]
 foreground = "light_gray"
 background = "black"
+
+# Text-entry shortcuts are contextual; panel controls remain unchanged.
+[keys.dialog.commands]
+"text.paste" = ["Ctrl+V", "Shift+Insert"]
+"text.copy" = "Ctrl+C"
+"text.cut" = "Ctrl+X"
+"text.select_all" = "Ctrl+A"

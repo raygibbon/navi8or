@@ -26,7 +26,7 @@ typedef struct {
 } NavBinding;
 #define NAV_BINDING_MAX 256
 typedef struct { NavBinding bindings[NAV_BINDING_MAX]; size_t count; } NavKeymap;
-typedef struct { NavKeyStroke prefix; bool pending; NavInputContext context; } NavInput;
+typedef struct { NavKeyStroke prefix; bool pending, pasting; NavInputContext context; } NavInput;
 typedef struct {
     NavTermEventType type;
     NavCommand command;

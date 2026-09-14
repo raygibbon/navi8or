@@ -20,8 +20,17 @@ static void expect(uint16_t raw_key, uint8_t raw_modifiers,
     assert(event.modifiers == modifiers);
 }
 
+static void paste_boundaries(void)
+{
+    struct tb_event raw = {.type = TB_EVENT_KEY, .key = TB_KEY_PASTE_START}; NavTermEvent event;
+    assert(nav_term_translate_tb_event(&raw, &event) == 1 && event.type == NAV_TERM_EVENT_PASTE_START);
+    raw.key = TB_KEY_PASTE_END;
+    assert(nav_term_translate_tb_event(&raw, &event) == 1 && event.type == NAV_TERM_EVENT_PASTE_END);
+}
+
 int main(void)
 {
+    paste_boundaries();
     expect(TB_KEY_ENTER, TB_MOD_CTRL, NAV_KEY_ENTER, 0);
     expect(TB_KEY_TAB, TB_MOD_CTRL, NAV_KEY_TAB, 0);
     expect(TB_KEY_ESC, 0, NAV_KEY_ESCAPE, 0);

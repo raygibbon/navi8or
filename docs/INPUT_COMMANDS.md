@@ -172,3 +172,8 @@ Preferences opens with `Ctrl+T P` or Options → Preferences. Its editor control
 use the `preferences` command context; physical capture bypasses action dispatch
 so even keys currently assigned to actions can be rebound. Insert now has a
 logical backend key. See [live editing, saving and shortcut display](PROFILES.md).
+
+Text-entry Dialog defaults are Ctrl+V/Shift+Insert (`text.paste`), Ctrl+C
+(`text.copy`), Ctrl+X (`text.cut`) and Ctrl+A (`text.select_all`). These are
+independent of Panel commands. [Clipboard/platform details](PROFILES.md) describe
+optional desktop helpers and terminal paste support.

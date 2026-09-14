@@ -70,3 +70,8 @@ NAV_COMMAND(KEY_APPEND, "profile.key_append", "AddKey", "Add Binding")
 NAV_COMMAND(KEY_SEQUENCE, "profile.key_sequence", "Sequence", "Capture Two Keys")
 
 NAV_COMMAND(DOWNLOAD, "resource.download", "Download", "Download / Save Copy")
+
+NAV_COMMAND(TEXT_PASTE, "text.paste", "Paste", "Paste Text")
+NAV_COMMAND(TEXT_COPY, "text.copy", "Copy", "Copy Selected Text")
+NAV_COMMAND(TEXT_CUT, "text.cut", "Cut", "Cut Selected Text")
+NAV_COMMAND(TEXT_SELECT_ALL, "text.select_all", "Select All", "Select All Text")

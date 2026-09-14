@@ -144,3 +144,38 @@ The four [bundled TOMLs](../themes/README.md) explicitly show primary keys and
 shortcut-display defaults. Solar Dark remains the compiled startup default;
 Classic DOS is an alternate profile. External editor settings stay in normal
 configuration. See [URL/location commands](LOCATIONS.md) for the bindable Download action.
+
+Text fields use Dialog context clipboard commands. These do not replace Panel
+Copy or the Panel Ctrl+V sequence:
+
+```toml
+[keys.dialog.commands]
+"text.paste" = ["Ctrl+V", "Shift+Insert"]
+"text.copy" = "Ctrl+C"
+"text.cut" = "Ctrl+X"
+"text.select_all" = "Ctrl+A"
+```
+
+Ctrl+A selects the full field; Copy/Cut operate on that selection. Typing and
+paste replace it, and ordinary cursor movement collapses it. Cursor movement,
+Backspace and Delete respect UTF-8 character boundaries. This is a small
+one-line editor, not a grapheme-aware editor with mouse/Shift selection.
+
+Windows uses CF_UNICODETEXT and strict UTF-16/UTF-8 conversion. Linux explicit
+clipboard access prefers `wl-paste`/`wl-copy` from optional **wl-clipboard**, then
+`xclip` using UTF8_STRING on X11. No GUI libraries are linked on Linux. Without
+these helpers, Copy/Cut/Paste can use an internal Navi8or clipboard; browser
+clipboard reads require a helper. An unavailable clipboard produces a text-entry
+error. Install the appropriate helper through your host's package manager; no
+host packages are installed by Navi8or. macOS uses pbcopy/pbpaste.
+
+Terminal paste, including Ctrl+Shift+V/right-click paste handled by the terminal,
+needs no clipboard helper. Navi8or enables bracketed paste and treats its payload
+as text, suppressing bindings (and ignoring pasted controls/newlines in these
+one-line fields). The pending paste is bounded by field capacity and committed
+at the end marker, so an oversized paste leaves the old value unchanged. Outside
+text contexts, bracketed-paste payloads are ignored. Terminals without bracketed
+paste cannot distinguish injected keys from typing; their ordinary UTF-8 text
+still inserts normally. Clipboard reads are bounded at 1 MiB; each field retains
+its existing byte limit (4095 bytes for Enter URL / Location). Clipboard paste
+rejects control characters and oversized/invalid UTF-8 rather than truncating.

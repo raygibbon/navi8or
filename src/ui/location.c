@@ -12,36 +12,42 @@ static int location_form(const char *title, const char *source,
     for (int i = 0; i < count; i++) nav_ui_field_init(&fields[i], values[i], sizes[i]);
     int focus = 0, button = 0;
     for (;;) {
-        if (redraw) redraw(data); else nav_term_clear(NAV_STYLE_BACKGROUND);
-        int width = nav_term_width(), height = nav_term_height();
-        int w = width > 90 ? 90 : width - 2, h = count + (source ? 7 : 5);
-        int x = (width - w) / 2, y = (height - h) / 2;
-        if (w < 32 || height < h) {
-            nav_ui_text(0, 0, width, "Resize terminal to edit location", NAV_STYLE_MESSAGE);
-        } else {
-            nav_ui_box(x, y, w, h, title, NAV_STYLE_DIALOG);
-            int top = y + 2;
-            if (source) { nav_ui_text(x + 2, top++, w - 4, source, NAV_STYLE_DIALOG); top++; }
-            for (int i = 0; i < count; i++) {
-                int label = (int)strlen(labels[i]);
-                nav_ui_text(x + 2, top + i, label, labels[i], NAV_STYLE_DIALOG);
-                int available = w - label - 4;
-                nav_ui_field_ensure_visible(&fields[i], (size_t)available);
-                nav_ui_text(x + 2 + label, top + i, available,
-                            values[i] + fields[i].offset,
-                            focus == i ? NAV_STYLE_SELECTION : NAV_STYLE_TEXT);
-                if (focus == i) nav_term_cursor(x + 2 + label + (int)(fields[i].cursor - fields[i].offset), top + i);
+        if (focus >= count || (!fields[focus].paste && !fields[focus].paste_failed)) {
+            if (redraw) redraw(data); else nav_term_clear(NAV_STYLE_BACKGROUND);
+            int width = nav_term_width(), height = nav_term_height();
+            int w = width > 90 ? 90 : width - 2, h = count + (source ? 7 : 5);
+            int x = (width - w) / 2, y = (height - h) / 2;
+            if (w < 32 || height < h) {
+                nav_ui_text(0, 0, width, "Resize terminal to edit location", NAV_STYLE_MESSAGE);
+            } else {
+                nav_ui_box(x, y, w, h, title, NAV_STYLE_DIALOG);
+                int top = y + 2;
+                if (source) { nav_ui_text(x + 2, top++, w - 4, source, NAV_STYLE_DIALOG); top++; }
+                for (int i = 0; i < count; i++) {
+                    int label = (int)strlen(labels[i]);
+                    nav_ui_text(x + 2, top + i, label, labels[i], NAV_STYLE_DIALOG);
+                    int available = w - label - 4;
+                    nav_ui_field_draw(&fields[i], x + 2 + label, top + i, available,
+                                      NAV_STYLE_TEXT, false, focus == i);
+                }
+                const char *buttons[] = {choose_action ? "Open" : "Download", choose_action ? "Download" : "Cancel", "Cancel"};
+                int n = choose_action ? 3 : 2;
+                for (int i = 0; i < n; i++) nav_ui_text(x + 3 + i * (w - 6) / n, y + h - 2,
+                    (w - 6) / n, buttons[i], focus == count && button == i ? NAV_STYLE_SELECTION : NAV_STYLE_DIALOG);
+                if (focus == count) nav_term_hide_cursor();
             }
-            const char *buttons[] = {choose_action ? "Open" : "Download", choose_action ? "Download" : "Cancel", "Cancel"};
-            int n = choose_action ? 3 : 2;
-            for (int i = 0; i < n; i++) nav_ui_text(x + 3 + i * (w - 6) / n, y + h - 2,
-                (w - 6) / n, buttons[i], focus == count && button == i ? NAV_STYLE_SELECTION : NAV_STYLE_DIALOG);
-            if (focus == count) nav_term_hide_cursor();
+            nav_term_present();
         }
-        nav_term_present();
         NavAction action;
-        if (nav_ui_input(NAV_CONTEXT_DIALOG, &action) <= 0 || action.type != NAV_TERM_EVENT_KEY) continue;
-        if (action.command == NAV_CMD_CANCEL) { nav_term_hide_cursor(); return -1; }
+        if (nav_ui_input(NAV_CONTEXT_DIALOG, &action) <= 0) continue;
+        if (action.type == NAV_TERM_EVENT_PASTE_START || action.type == NAV_TERM_EVENT_PASTE_END) {
+            if (focus < count && nav_ui_field_event(&fields[focus], &action) == NAV_UI_FIELD_ERROR) {
+                const char *lines[] = {fields[focus].error}; nav_ui_info(" Text Entry ", lines, 1);
+            }
+            continue;
+        }
+        if (action.type != NAV_TERM_EVENT_KEY) continue;
+        if (action.command == NAV_CMD_CANCEL) { for (int i = 0; i < count; i++) nav_ui_field_destroy(&fields[i]); nav_term_hide_cursor(); return -1; }
         if (action.command == NAV_CMD_DOWN) { focus = (focus + 1) % (count + 1); continue; }
         if (action.command == NAV_CMD_UP) { focus = (focus + count) % (count + 1); continue; }
         if (focus == count && (action.command == NAV_CMD_LEFT || action.command == NAV_CMD_RIGHT)) {
@@ -50,9 +56,12 @@ static int location_form(const char *title, const char *source,
         if (action.command == NAV_CMD_ACCEPT) {
             if (focus < count && count > 1) { focus++; continue; }
             nav_term_hide_cursor();
+            for (int i = 0; i < count; i++) nav_ui_field_destroy(&fields[i]);
             return button == (choose_action ? 2 : 1) ? -1 : button;
         }
-        if (focus < count) nav_ui_field_event(&fields[focus], &action);
+        if (focus < count && nav_ui_field_event(&fields[focus], &action) == NAV_UI_FIELD_ERROR) {
+            const char *lines[] = {fields[focus].error}; nav_ui_info(" Text Entry ", lines, 1);
+        }
     }
 }
 

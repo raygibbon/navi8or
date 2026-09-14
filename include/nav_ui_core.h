@@ -98,6 +98,11 @@ typedef struct
     size_t length;
     size_t cursor;
     size_t offset;
+    size_t anchor;
+    bool selected, paste_failed;
+    char *paste;
+    size_t paste_length;
+    char error[160];
 } NavUiField;
 
 typedef enum
@@ -106,9 +111,14 @@ typedef enum
     NAV_UI_FIELD_MOVED,
     NAV_UI_FIELD_CHANGED,
     NAV_UI_FIELD_ACCEPTED,
-    NAV_UI_FIELD_CANCELLED
+    NAV_UI_FIELD_CANCELLED,
+    NAV_UI_FIELD_ERROR
 } NavUiFieldResult;
 
+uint32_t nav_ui_field_character(const char *, size_t *);
+NavUiFieldResult nav_ui_field_insert(NavUiField *, const char *);
+void nav_ui_field_destroy(NavUiField *);
+void nav_ui_field_draw(NavUiField *, int, int, int, NavStyle, bool, bool);
 void nav_ui_field_init(NavUiField *, char *, size_t);
 void nav_ui_field_ensure_visible(NavUiField *, size_t);
 NavUiFieldResult nav_ui_field_event(NavUiField *, const NavAction *);

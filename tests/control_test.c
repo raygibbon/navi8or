@@ -1,6 +1,11 @@
 #include "nav_ui_core.h"
 #include <assert.h>
 #include <string.h>
+#include <stdlib.h>
+#include "nav_clipboard.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static NavUiFieldResult key(NavUiField *field, int value, unsigned modifiers)
 {
@@ -32,6 +37,63 @@ static void test_field(void)
     field.offset = 0;
     nav_ui_field_ensure_visible(&field, 2);
     assert(field.offset == 2);
+}
+
+static void test_clipboard_field(void)
+{
+    char *saved = NULL, error[160];
+#ifdef _WIN32
+    if (nav_clipboard_get_text(&saved, error, sizeof error)) {
+        if (CountClipboardFormats() || nav_clipboard_set_text("", error, sizeof error)) {
+            puts("Native clipboard test skipped: unavailable or non-text clipboard must be preserved"); return;
+        }
+    }
+#else
+    unsetenv("WAYLAND_DISPLAY"); unsetenv("DISPLAY");
+#endif
+    char buffer[128] = "héllo/猫/😀"; NavUiField field;
+    nav_ui_field_init(&field, buffer, sizeof buffer);
+    assert(key(&field, 'a', NAV_MOD_CTRL) == NAV_UI_FIELD_MOVED && field.selected);
+    assert(key(&field, 'c', NAV_MOD_CTRL) == NAV_UI_FIELD_IGNORED);
+    char *copy; assert(!nav_clipboard_get_text(&copy, error, sizeof error)); assert(!strcmp(copy, buffer)); free(copy);
+    assert(key(&field, 'x', NAV_MOD_CTRL) == NAV_UI_FIELD_CHANGED && !buffer[0]);
+    assert(key(&field, 'v', NAV_MOD_CTRL) == NAV_UI_FIELD_CHANGED && !strcmp(buffer, "héllo/猫/😀"));
+    assert(key(&field, NAV_KEY_LEFT, 0) == NAV_UI_FIELD_MOVED);
+    assert(field.cursor == strlen("héllo/猫/"));
+    assert(!nav_clipboard_set_text("中", error, sizeof error));
+    assert(key(&field, 'v', NAV_MOD_CTRL) == NAV_UI_FIELD_CHANGED && !strcmp(buffer, "héllo/猫/中😀"));
+    assert(key(&field, 'a', NAV_MOD_CTRL) == NAV_UI_FIELD_MOVED);
+    assert(key(&field, 'v', NAV_MOD_CTRL) == NAV_UI_FIELD_CHANGED && !strcmp(buffer, "中"));
+    assert(key(&field, NAV_KEY_BACKSPACE, 0) == NAV_UI_FIELD_CHANGED && !buffer[0]);
+    assert(key(&field, 0x1f600, 0) == NAV_UI_FIELD_CHANGED && !strcmp(buffer, "😀"));
+    assert(key(&field, NAV_KEY_HOME, 0) == NAV_UI_FIELD_MOVED);
+    assert(key(&field, NAV_KEY_DELETE, 0) == NAV_UI_FIELD_CHANGED && !buffer[0]);
+    assert(nav_ui_field_insert(&field, "\xc0\xaf") == NAV_UI_FIELD_ERROR && !buffer[0]);
+    char long_text[140]; memset(long_text, 'x', sizeof long_text - 1); long_text[139] = 0;
+    assert(nav_ui_field_insert(&field, long_text) == NAV_UI_FIELD_ERROR && !buffer[0]);
+    NavInput input = {0}; NavKeymap map; nav_keymap_defaults(&map);
+    NavTermEvent event = {.type = NAV_TERM_EVENT_PASTE_START};
+    NavAction action = nav_input_resolve(&input, &map, NAV_CONTEXT_DIALOG, &event); nav_ui_field_event(&field, &action);
+    event.type = NAV_TERM_EVENT_KEY; event.key = 'a'; event.modifiers = NAV_MOD_CTRL;
+    action = nav_input_resolve(&input, &map, NAV_CONTEXT_DIALOG, &event); assert(action.command == NAV_CMD_TEXT); nav_ui_field_event(&field, &action);
+    event.key = 0x732b; event.modifiers = 0;
+    action = nav_input_resolve(&input, &map, NAV_CONTEXT_DIALOG, &event); nav_ui_field_event(&field, &action);
+    assert(!buffer[0]);
+    event.type = NAV_TERM_EVENT_PASTE_END; action = nav_input_resolve(&input, &map, NAV_CONTEXT_DIALOG, &event);
+    assert(nav_ui_field_event(&field, &action) == NAV_UI_FIELD_CHANGED && !strcmp(buffer, "猫"));
+    assert(key(&field, 'a', NAV_MOD_CTRL) == NAV_UI_FIELD_MOVED);
+    event.type = NAV_TERM_EVENT_PASTE_START; action = nav_input_resolve(&input, &map, NAV_CONTEXT_DIALOG, &event); nav_ui_field_event(&field, &action);
+    event.type = NAV_TERM_EVENT_KEY; event.key = 'x';
+    for (int i = 0; i < 140; i++) { action = nav_input_resolve(&input, &map, NAV_CONTEXT_DIALOG, &event); nav_ui_field_event(&field, &action); }
+    event.type = NAV_TERM_EVENT_PASTE_END; action = nav_input_resolve(&input, &map, NAV_CONTEXT_DIALOG, &event);
+    assert(nav_ui_field_event(&field, &action) == NAV_UI_FIELD_ERROR && !strcmp(buffer, "猫"));
+    assert(key(&field, 'q', 0) == NAV_UI_FIELD_CHANGED && !strcmp(buffer, "q"));
+    nav_ui_field_destroy(&field);
+    if (saved) { assert(!nav_clipboard_set_text(saved, error, sizeof error)); free(saved); }
+#ifdef _WIN32
+    else assert(!nav_clipboard_set_text("", error, sizeof error));
+    puts("Windows native clipboard UTF-16/UTF-8 and contextual field round trips passed");
+#endif
 }
 
 static int menu_motion(const NavTermEvent *event)
@@ -152,6 +214,7 @@ static void test_adjust_area(void)
 int main(void)
 {
     test_field();
+    test_clipboard_field();
     test_menu();
     test_bar_spacing();
     test_text_view();

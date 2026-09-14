@@ -25,20 +25,7 @@ static void draw_prompt(const char *label, NavUiField *field, bool secret)
     nav_ui_s_output(label ? label : "", row, 0, NAV_STYLE_MESSAGE, &plain);
     if (field_width < 1)
         field_width = 1;
-    nav_ui_field_ensure_visible(field, (size_t)field_width);
-    /* display_prompt() clears the unused prompt region with Text, while
-     * get_string() writes entered characters in Message. */
-    nav_ui_text(column, row, field_width, "", NAV_STYLE_TEXT);
-    if (secret) {
-        char masked[512];
-        size_t visible = strlen(field->buffer + field->offset);
-        if (visible >= sizeof masked) visible = sizeof masked - 1;
-        memset(masked, '*', visible); masked[visible] = 0;
-        nav_ui_text(column, row, field_width, masked, NAV_STYLE_MESSAGE);
-    } else
-        nav_ui_text(column, row, field_width, field->buffer + field->offset,
-                    NAV_STYLE_MESSAGE);
-    nav_term_cursor(column + (int)(field->cursor - field->offset), row);
+    nav_ui_field_draw(field, column, row, field_width, NAV_STYLE_MESSAGE, secret, true);
 }
 
 static int prompt_value(const char *title, const char *label, char *buffer,
@@ -55,17 +42,19 @@ static int prompt_value(const char *title, const char *label, char *buffer,
     nav_ui_field_init(&field, buffer, capacity);
     for (;;) {
         NavAction event;
-        if (redraw)
-            redraw(data);
-        else
-            nav_term_clear(NAV_STYLE_BACKGROUND);
-        if (!saved_valid && nav_term_width() > 0) {
-            if (nav_ui_save_area(&saved, 0, prompt_row(), nav_term_width(), 1,
-                                &plain) == 0)
-                saved_valid = 1;
+        if (!field.paste && !field.paste_failed) {
+            if (redraw)
+                redraw(data);
+            else
+                nav_term_clear(NAV_STYLE_BACKGROUND);
+            if (!saved_valid && nav_term_width() > 0) {
+                if (nav_ui_save_area(&saved, 0, prompt_row(), nav_term_width(), 1,
+                                    &plain) == 0)
+                    saved_valid = 1;
+            }
+            draw_prompt(label, &field, secret);
+            nav_term_present();
         }
-        draw_prompt(label, &field, secret);
-        nav_term_present();
         if (nav_ui_input(NAV_CONTEXT_DIALOG, &event) <= 0)
             continue;
         if (event.type == NAV_TERM_EVENT_RESIZE) {
@@ -78,6 +67,7 @@ static int prompt_value(const char *title, const char *label, char *buffer,
             if (saved_valid)
                 nav_ui_restore_area(&saved);
             nav_ui_free_area(&saved);
+            nav_ui_field_destroy(&field);
             nav_term_hide_cursor();
             nav_term_present();
             return 0;
@@ -85,11 +75,14 @@ static int prompt_value(const char *title, const char *label, char *buffer,
             if (saved_valid)
                 nav_ui_restore_area(&saved);
             nav_ui_free_area(&saved);
+            nav_ui_field_destroy(&field);
             nav_term_hide_cursor();
             nav_term_present();
             return -1;
-        default:
-            break;
+        case NAV_UI_FIELD_ERROR: {
+            const char *lines[] = {field.error}; nav_ui_info(" Text Entry ", lines, 1); break;
+        }
+        default: break;
         }
     }
 }

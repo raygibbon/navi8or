@@ -91,6 +91,9 @@ void nav_keymap_defaults(NavKeymap *map)
     }
     B(MENU, "Ctrl+Left", LEFT); B(MENU, "Ctrl+Right", RIGHT);
     B(DIALOG, "Tab", DOWN);
+    B(DIALOG, "Ctrl+V", TEXT_PASTE); B(DIALOG, "Shift+Insert", TEXT_PASTE);
+    B(DIALOG, "Ctrl+C", TEXT_COPY); B(DIALOG, "Ctrl+X", TEXT_CUT);
+    B(DIALOG, "Ctrl+A", TEXT_SELECT_ALL);
     B(DIALOG, "Backspace", BACKSPACE); B(DIALOG, "Delete", TEXT_DELETE);
     B(CONFIRM, "Y", ACCEPT); B(CONFIRM, "Enter", ACCEPT);
     B(CONFIRM, "N", CANCEL); B(CONFIRM, "Escape", CANCEL);
@@ -119,6 +122,15 @@ NavAction nav_input_resolve(NavInput *input, const NavKeymap *map,
                             NavInputContext context, const NavTermEvent *event)
 {
     NavAction action = {.type = event->type, .width = event->width, .height = event->height};
+    if (event->type == NAV_TERM_EVENT_PASTE_START) { input->pasting = true; input->pending = false; return action; }
+    if (event->type == NAV_TERM_EVENT_PASTE_END) { input->pasting = false; return action; }
+    if (input->pasting && event->type == NAV_TERM_EVENT_KEY) {
+        if (context == NAV_CONTEXT_DIALOG || context == NAV_CONTEXT_EDITOR) {
+            action.command = NAV_CMD_TEXT;
+            action.text = event->modifiers & NAV_MOD_CTRL ? 0 : (uint32_t)event->key;
+        }
+        return action;
+    }
     if (input->context != context || event->type == NAV_TERM_EVENT_RESIZE) input->pending = false;
     input->context = context;
     if (event->type != NAV_TERM_EVENT_KEY) return action;

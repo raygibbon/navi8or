@@ -57,6 +57,10 @@ int nav_term_translate_tb_event(const struct tb_event *raw, NavTermEvent *event)
     if (raw->type != TB_EVENT_KEY)
         return 1;
 
+    if (raw->key == TB_KEY_PASTE_START || raw->key == TB_KEY_PASTE_END) {
+        event->type = raw->key == TB_KEY_PASTE_START ? NAV_TERM_EVENT_PASTE_START : NAV_TERM_EVENT_PASTE_END;
+        return 1;
+    }
     event->type = NAV_TERM_EVENT_KEY;
     event->key = raw->ch ? (int)raw->ch : translate_key(raw->key);
     if (raw->mod & TB_MOD_ALT)

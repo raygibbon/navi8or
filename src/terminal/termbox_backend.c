@@ -54,6 +54,9 @@ int nav_term_init(void)
         nav_term_shutdown();
         return -1;
     }
+#ifndef _WIN32
+    tb_send("\x1b[?2004h", 8);
+#endif
     return 0;
 }
 
@@ -61,6 +64,9 @@ void nav_term_shutdown(void)
 {
     if (terminal_active)
     {
+#ifndef _WIN32
+        tb_send("\x1b[?2004l", 8);
+#endif
         tb_shutdown();
         terminal_active = 0;
     }
@@ -100,6 +106,8 @@ void nav_term_text(int x, int y, int width, const char *text, NavStyle style)
     }
 }
 
+void nav_term_unicode_glyph(int x, int y, uint32_t glyph, NavStyle style) { put_cell(x, y, glyph, style); }
+int nav_term_unicode_width(uint32_t glyph) { int width = tb_wcwidth(glyph); return width > 0 ? width : 1; }
 void nav_term_glyph(int x, int y, uint32_t glyph, NavStyle style) { put_cell(x, y, glyph <= 0xff ? tdx_cp437_to_unicode((unsigned char)glyph) : glyph, style); }
 void nav_term_hline(int x, int y, uint32_t glyph, int count, NavStyle style)
 {

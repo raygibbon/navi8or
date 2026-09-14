@@ -1,5 +1,6 @@
 """Minimal VT screen model for termbox's absolute-positioned cell updates."""
 import codecs
+import unicodedata
 
 
 class TerminalScreen:
@@ -112,9 +113,16 @@ class TerminalScreen:
             elif character == "\b":
                 self.column = max(0, self.column - 1)
             elif character >= " ":
+                width = 0 if unicodedata.combining(character) else (2 if unicodedata.east_asian_width(character) in ("W", "F") else 1)
                 if 0 <= self.row < self.rows and 0 <= self.column < self.columns:
-                    self.cells[self.row][self.column] = (character, self._style())
-                self.column += 1
+                    if width:
+                        self.cells[self.row][self.column] = (character, self._style())
+                        if width == 2 and self.column + 1 < self.columns:
+                            self.cells[self.row][self.column + 1] = ("", self._style())
+                    elif self.column:
+                        old, style = self.cells[self.row][self.column - 1]
+                        self.cells[self.row][self.column - 1] = (old + character, style)
+                self.column += width
             index += 1
         self.pending = text[index:]
 

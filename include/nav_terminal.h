@@ -86,7 +86,9 @@ typedef enum
 {
     NAV_TERM_EVENT_NONE,
     NAV_TERM_EVENT_KEY,
-    NAV_TERM_EVENT_RESIZE
+    NAV_TERM_EVENT_RESIZE,
+    NAV_TERM_EVENT_PASTE_START,
+    NAV_TERM_EVENT_PASTE_END
 } NavTermEventType;
 enum
 {
@@ -112,6 +114,8 @@ int nav_term_height(void);
 void nav_term_clear(NavStyle);
 void nav_term_present(void);
 void nav_term_text(int, int, int, const char *, NavStyle);
+void nav_term_unicode_glyph(int, int, uint32_t, NavStyle);
+int nav_term_unicode_width(uint32_t);
 void nav_term_glyph(int, int, uint32_t, NavStyle);
 void nav_term_hline(int, int, uint32_t, int, NavStyle);
 void nav_term_vline(int, int, uint32_t, int, NavStyle);

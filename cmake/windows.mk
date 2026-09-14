@@ -15,7 +15,7 @@ CPPFLAGS += -D_WINDOWS -D_WIN32_WINNT=0x0601 -DCURL_STATICLIB -DSODIUM_STATIC \
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror -MMD -MP
 LDLIBS += $(WINDOWS_DEPS_PREFIX)/lib/libcurl.a $(WINDOWS_DEPS_PREFIX)/lib/libsodium.a \
-    $(WINDOWS_DEPS_PREFIX)/lib/libsmb2.a -lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -lsecur32 -liphlpapi -lshlwapi -lwldap32
+    $(WINDOWS_DEPS_PREFIX)/lib/libsmb2.a -lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -lsecur32 -liphlpapi -lshlwapi -lwldap32 -luser32
 SOURCES := $(filter-out src/platform/posix.c src/platform/secure_file_posix.c src/path.c src/provider/local.c,$(shell find src -name '*.c' | sort))
 OBJECTS := $(SOURCES:src/%.c=build/windows/%.o) build/windows/toml.o
 -include $(OBJECTS:.o=.d)
