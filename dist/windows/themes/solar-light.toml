@@ -1,0 +1,146 @@
+[theme]
+format = 2
+name = "Solar Light"
+
+[ui]
+style = "modern"
+
+[ui.header]
+foreground = "blue"
+background = "light_gray"
+
+[ui.status]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.message]
+foreground = "blue"
+background = "light_gray"
+
+[ui.text]
+foreground = "black"
+background = "light_gray"
+
+[ui.accent]
+foreground = "blue"
+background = "light_gray"
+
+[ui.surface_alt]
+foreground = "white"
+background = "blue"
+
+[ui.dialog]
+foreground = "black"
+background = "white"
+
+[ui.dialog_title]
+foreground = "cyan"
+background = "white"
+
+[ui.text_dim]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.selection]
+foreground = "white"
+background = "blue"
+
+[ui.keybar]
+foreground = "black"
+background = "light_gray"
+
+[ui.keybar_selected]
+foreground = "white"
+background = "blue"
+
+[ui.keybar_key]
+foreground = "white"
+background = "blue"
+
+[ui.keybar_disabled]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.menu]
+foreground = "black"
+background = "white"
+
+[ui.menu_disabled]
+foreground = "dark_gray"
+background = "white"
+
+[ui.menu_selected]
+foreground = "blue"
+background = "light_gray"
+
+[ui.menu_selected_disabled]
+foreground = "red"
+background = "light_gray"
+
+[ui.frame]
+style = "single"
+space = false
+shadow = false
+
+[ui.viewer_line_number]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.viewer_search_match]
+foreground = "black"
+background = "yellow"
+
+[ui.progress]
+foreground = "white"
+background = "blue"
+
+[ui.pane_title]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.pane_title_active]
+foreground = "blue"
+background = "light_gray"
+
+[ui.background]
+foreground = "black"
+background = "light_gray"
+
+[ui.surface]
+foreground = "black"
+background = "light_gray"
+
+[ui.border]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.border_active]
+foreground = "blue"
+background = "light_gray"
+
+[ui.selection_inactive]
+foreground = "black"
+background = "light_gray"
+
+[ui.path]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.column_header]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.error]
+foreground = "white"
+background = "red"
+
+[ui.warning]
+foreground = "magenta"
+background = "light_gray"
+
+[symbols]
+directory = "▸"
+parent = "↑"
+selected = "›"
+upload = "↑"
+download = "↓"

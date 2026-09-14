@@ -1,0 +1,138 @@
+[theme]
+format = 2
+name = "Navi8or Classic"
+
+[ui]
+style = "classic"
+
+[ui.header]
+foreground = "light_cyan"
+background = "blue"
+
+[ui.status]
+foreground = "yellow"
+background = "blue"
+
+[ui.message]
+foreground = "white"
+background = "red"
+
+[ui.text]
+foreground = "light_gray"
+background = "blue"
+
+[ui.accent]
+foreground = "white"
+background = "blue"
+
+[ui.surface_alt]
+foreground = "black"
+background = "cyan"
+
+[ui.dialog]
+foreground = "black"
+background = "light_gray"
+
+[ui.dialog_title]
+foreground = "light_blue"
+background = "light_gray"
+
+[ui.text_dim]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.selection]
+foreground = "white"
+background = "magenta"
+
+[ui.keybar]
+foreground = "black"
+background = "cyan"
+
+[ui.keybar_selected]
+foreground = "yellow"
+background = "cyan"
+
+[ui.keybar_key]
+foreground = "white"
+background = "blue"
+
+[ui.keybar_disabled]
+foreground = "dark_gray"
+background = "cyan"
+
+[ui.menu]
+foreground = "black"
+background = "light_gray"
+
+[ui.menu_disabled]
+foreground = "dark_gray"
+background = "light_gray"
+
+[ui.menu_selected]
+foreground = "white"
+background = "green"
+
+[ui.menu_selected_disabled]
+foreground = "dark_gray"
+background = "green"
+
+[ui.frame]
+style = "combine"
+space = true
+shadow = true
+
+[ui.viewer_line_number]
+foreground = "light_cyan"
+background = "blue"
+
+[ui.viewer_search_match]
+foreground = "black"
+background = "yellow"
+
+[ui.progress]
+foreground = "black"
+background = "light_gray"
+
+[ui.pane_title]
+foreground = "black"
+background = "cyan"
+
+[ui.pane_title_active]
+foreground = "yellow"
+background = "cyan"
+
+[ui.background]
+foreground = "light_gray"
+background = "blue"
+
+[ui.surface]
+foreground = "light_gray"
+background = "blue"
+
+[ui.border]
+foreground = "light_cyan"
+background = "blue"
+
+[ui.border_active]
+foreground = "yellow"
+background = "cyan"
+
+[ui.selection_inactive]
+foreground = "light_gray"
+background = "blue"
+
+[ui.error]
+foreground = "white"
+background = "red"
+
+[ui.warning]
+foreground = "yellow"
+background = "blue"
+
+[symbols]
+directory = "►"
+parent = "↑"
+selected = "»"
+upload = "↑"
+download = "↓"
