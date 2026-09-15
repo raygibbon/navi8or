@@ -1,0 +1,209 @@
+# Complete UI profile. Solar Dark is the unchanged startup default.
+[profile]
+format = 2
+name = "Monochrome"
+
+[ui]
+style = "classic"
+
+[colors]
+# Semantic role palettes, using Navi8or's sixteen named colours.
+[colors.header]
+foreground = "white"
+background = "black"
+
+[colors.status]
+foreground = "light_gray"
+background = "black"
+
+[colors.message]
+foreground = "white"
+background = "black"
+
+[colors.text]
+foreground = "light_gray"
+background = "black"
+
+[colors.accent]
+foreground = "white"
+background = "black"
+
+[colors.surface_alt]
+foreground = "black"
+background = "white"
+
+[colors.dialog]
+foreground = "white"
+background = "black"
+
+[colors.dialog_title]
+foreground = "black"
+background = "white"
+
+[colors.text_dim]
+foreground = "dark_gray"
+background = "black"
+
+[colors.selection]
+foreground = "black"
+background = "white"
+
+[colors.keybar]
+foreground = "black"
+background = "white"
+
+[colors.keybar_selected]
+foreground = "white"
+background = "dark_gray"
+
+[colors.keybar_key]
+foreground = "white"
+background = "black"
+
+[colors.keybar_disabled]
+foreground = "dark_gray"
+background = "white"
+
+[colors.menu]
+foreground = "light_gray"
+background = "black"
+
+[colors.menu_disabled]
+foreground = "dark_gray"
+background = "black"
+
+[colors.menu_selected]
+foreground = "white"
+background = "black"
+
+[colors.menu_selected_disabled]
+foreground = "dark_gray"
+background = "black"
+
+[ui.frame]
+style = "single"
+space = false
+shadow = false
+
+[colors.viewer_line_number]
+foreground = "dark_gray"
+background = "black"
+
+[colors.viewer_search_match]
+foreground = "black"
+background = "white"
+
+[colors.progress]
+foreground = "black"
+background = "white"
+
+[colors.pane_title]
+foreground = "light_gray"
+background = "black"
+
+[colors.pane_title_active]
+foreground = "black"
+background = "white"
+
+[colors.background]
+foreground = "light_gray"
+background = "black"
+
+[colors.surface]
+foreground = "light_gray"
+background = "black"
+
+[colors.border]
+foreground = "dark_gray"
+background = "black"
+
+[colors.border_active]
+foreground = "black"
+background = "white"
+
+[colors.selection_inactive]
+foreground = "light_gray"
+background = "black"
+
+[colors.error]
+foreground = "white"
+background = "black"
+
+[colors.warning]
+foreground = "light_gray"
+background = "black"
+
+[symbols]
+directory = ">"
+parent = "^"
+selected = ">"
+upload = "^"
+download = "v"
+
+# UI presets; ordinary navigation can change panel/viewer state temporarily.
+[layout]
+show_menu = true
+show_app_identity = true
+show_status = true
+show_function_bar = true
+show_column_separator = "auto"
+
+[panes]
+view = "full"
+show_size = true
+show_modified = true
+show_hidden = false
+directories_first = true
+case_sensitive_sort = false
+sort = "name"
+size_format = "auto"
+date_format = "%Y-%m-%d %H:%M"
+
+[viewer]
+line_numbers = true
+wrap = false
+current_line = true
+
+# External editor command/args/wait belong in [editor] in normal nav.toml.
+# UI profiles deliberately do not override operational editor configuration.
+
+# Command = key(s). Omitted commands/context bindings inherit defaults.
+[shortcuts]
+show_function_bar = true
+show_menu_keys = true
+show_dialog_keys = true
+show_help_keys = true
+
+[keys]
+help = ["F1", "Ctrl+H"]
+view = ["F3", "Ctrl+V V"]
+edit = "F4"
+copy = ["F5", "Ctrl+F C"]
+move = ["F6", "Ctrl+F M"]
+mkdir = ["F7", "Ctrl+F K"]
+delete = ["F8", "Ctrl+F D"]
+quit = ["Ctrl+Q", "F10"]
+pane_switch = ["Tab", "Ctrl+P S"]
+parent = ["Backspace", "Ctrl+PgUp", "Alt+Up", "Ctrl+N P"]
+refresh = ["Ctrl+N R", "Ctrl+R R"]
+location = ["Ctrl+L", "Ctrl+N O"]
+menu = ["Ctrl+\\", "F2"]
+preferences = "Ctrl+T P"
+# Download is menu/button driven by default; optional Viewer shortcut:
+# [keys.viewer.commands]
+# download = "Alt+D"
+
+[colors.file]
+foreground = "light_gray"
+background = "black"
+
+[colors.directory]
+foreground = "light_gray"
+background = "black"
+
+# Text-entry shortcuts are contextual; panel controls remain unchanged.
+[keys.dialog.commands]
+"text.paste" = ["Ctrl+V", "Shift+Insert"]
+"text.copy" = "Ctrl+C"
+"text.cut" = "Ctrl+X"
+"text.select_all" = "Ctrl+A"

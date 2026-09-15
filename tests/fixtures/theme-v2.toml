@@ -1,0 +1,134 @@
+[theme]
+format = 2
+name = "Semantic fixture"
+
+[ui]
+style = "modern"
+
+[ui.background]
+foreground = "white"
+background = "black"
+
+[ui.surface]
+foreground = "light_gray"
+background = "blue"
+
+[ui.surface_alt]
+foreground = "black"
+background = "cyan"
+
+[ui.text]
+foreground = "light_gray"
+background = "black"
+
+[ui.text_dim]
+foreground = "dark_gray"
+background = "black"
+
+[ui.accent]
+foreground = "yellow"
+background = "blue"
+
+[ui.border]
+foreground = "cyan"
+background = "black"
+
+[ui.border_active]
+foreground = "light_cyan"
+background = "blue"
+
+[ui.selection]
+foreground = "white"
+background = "magenta"
+
+[ui.selection_inactive]
+foreground = "light_gray"
+background = "blue"
+
+[ui.header]
+foreground = "light_cyan"
+background = "red"
+
+[ui.menu]
+foreground = "black"
+background = "light_gray"
+
+[ui.menu_selected]
+foreground = "black"
+background = "cyan"
+
+[ui.menu_disabled]
+foreground = "dark_gray"
+background = "black"
+
+[ui.menu_selected_disabled]
+foreground = "dark_gray"
+background = "cyan"
+
+[ui.dialog]
+foreground = "black"
+background = "light_gray"
+
+[ui.dialog_title]
+foreground = "blue"
+background = "light_gray"
+
+[ui.status]
+foreground = "white"
+background = "green"
+
+[ui.message]
+foreground = "white"
+background = "red"
+
+[ui.error]
+foreground = "white"
+background = "red"
+
+[ui.warning]
+foreground = "black"
+background = "yellow"
+
+[ui.pane_title]
+foreground = "black"
+background = "cyan"
+
+[ui.pane_title_active]
+foreground = "yellow"
+background = "cyan"
+
+[ui.viewer_line_number]
+foreground = "dark_gray"
+background = "black"
+
+[ui.viewer_search_match]
+foreground = "black"
+background = "yellow"
+
+[ui.progress]
+foreground = "black"
+background = "light_gray"
+
+[ui.keybar]
+foreground = "black"
+background = "cyan"
+
+[ui.keybar_selected]
+foreground = "yellow"
+background = "cyan"
+
+[ui.keybar_key]
+foreground = "white"
+background = "blue"
+
+[ui.keybar_disabled]
+foreground = "dark_gray"
+background = "cyan"
+
+[ui.path]
+foreground = "light_cyan"
+background = "black"
+
+[ui.column_header]
+foreground = "dark_gray"
+background = "black"
