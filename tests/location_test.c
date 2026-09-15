@@ -1,4 +1,5 @@
 #include "nav.h"
+#include "nav_view.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +64,20 @@ int main(int argc, char **argv)
         assert(metadata.flags & NAV_ENTRY_DIR);
     } else {
         assert(!directory); cancelled = !strcmp(mode, "cancel");
+        if (!strcmp(mode, "auth")) {
+            /* Link View and Ctrl+L View both pass this resolved, longest-root
+             * authenticated provider to the same bounded Viewer source. */
+            bool binary = false;
+            NavViewSource *view = nav_view_source_open_provider(provider, entry.resource_id, &binary, error, sizeof error);
+            assert(view && !binary);
+            size_t length = 0; const char *line;
+            if (view->cursor_line) {
+                NavViewCursor cursor = {0}; view->cursor_top(view, &cursor);
+                line = view->cursor_line(view, &cursor, &length);
+            } else line = view->line(view, 0, &length);
+            assert(line && length && strstr(line, "direct URL log content"));
+            view->close(view);
+        }
         stalled = !strcmp(mode, "stall-cancel"); cancel_deadline = time(NULL) + 2;
         int result = nav_download_copy(provider, entry.resource_id, nav_local_provider(), target,
                                       !strcmp(mode, "overwrite-failure"), stalled ? 1048576 : 65536, progress, cancel, NULL, error, sizeof error);

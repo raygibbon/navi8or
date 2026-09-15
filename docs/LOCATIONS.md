@@ -2,6 +2,8 @@
 
 For streamed directory metadata, listing progress/cancellation and memory
 scaling, see [Large HTTP directory listings](HTTP_LISTINGS.md).
+For pane/fullscreen viewing and explicit text-link actions, see
+[Viewer](VIEWER.md).
 
 Ctrl+L (also the existing Ctrl+N O sequence) and File → Enter URL / Location...
 invoke the same `location.open` command. The profile can rebind it with

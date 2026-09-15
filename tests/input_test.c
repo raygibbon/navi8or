@@ -36,6 +36,15 @@ int main(void)
     assert(press(&input, &map, NAV_CONTEXT_VIEWER, "Ctrl+Q").command == NAV_CMD_VIEWER_CLOSE);
     assert(press(&input, &map, NAV_CONTEXT_VIEWER, "Ctrl+S").command == NAV_CMD_FIND);
     assert(press(&input, &map, NAV_CONTEXT_VIEWER, "F5").command == NAV_CMD_FIND_NEXT);
+    assert(press(&input, &map, NAV_CONTEXT_VIEWER, "Tab").command == NAV_CMD_PANEL_SWITCH);
+    assert(press(&input, &map, NAV_CONTEXT_PANEL, "Tab").command == NAV_CMD_PANEL_SWITCH);
+    assert(press(&input, &map, NAV_CONTEXT_VIEWER, "F7").command == NAV_CMD_NONE);
+    assert(nav_keymap_bind(&map, NAV_CONTEXT_VIEWER, "F7", "viewer.toggle_fullscreen", error, sizeof error) == 0);
+    assert(press(&input, &map, NAV_CONTEXT_VIEWER, "F7").command == NAV_CMD_VIEWER_FULLSCREEN);
+    assert(nav_keymap_bind(&map, NAV_CONTEXT_VIEWER, "F8", "viewer.next_link", error, sizeof error) == 0);
+    assert(press(&input, &map, NAV_CONTEXT_VIEWER, "F8").command == NAV_CMD_VIEWER_NEXT_LINK);
+    assert(nav_keymap_bind(&map, NAV_CONTEXT_VIEWER, "F9", "viewer.open_link", error, sizeof error) == 0);
+    assert(press(&input, &map, NAV_CONTEXT_VIEWER, "F9").command == NAV_CMD_VIEWER_OPEN_LINK);
     assert(nav_keymap_bind(&map, NAV_CONTEXT_PANEL, "F5", "file.view", error, sizeof error) == 0);
     assert(press(&input, &map, NAV_CONTEXT_PANEL, "F5").command == NAV_CMD_VIEW);
     assert(nav_keymap_bind(&map, NAV_CONTEXT_PANEL, "f5", "file.copy", error, sizeof error) != 0);

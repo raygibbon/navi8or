@@ -131,6 +131,8 @@ def panel_metadata(nav, url, byte_mode=False):
             for name, size in (("medium.log", "2.5 MB"), ("large.log", "8.0 GB"), ("zero.log", "0 B"), ("unknown.log", "-"), ("sub/", "<DIR>")):
                 rows = [row for row in screen.text().splitlines() if name in row]
                 assert rows and size in rows[0], screen.text()
+                if name == "unknown.log":
+                    assert "-  2026-09-14 18:45" in rows[0], screen.text()
             send(b"\x1b[21~")
             wait_for_exit(pid, "HTTP panel metadata")
             exited = True

@@ -107,7 +107,9 @@ static void metadata_cases(NavProvider *provider, const char *url)
     const char *tables[] = {
         "<tr><td><a href='d'>d</a></td><td>15-Sep-2026 14:30</td><td>2.5M</td><td>log file</td></tr>",
         "<tr>\n<td><a href='d'>d</a></td>\n<td>15-Sep-2026&nbsp;14:30</td>\n<td>2.5 MiB</td><td></td></tr>",
-        "<tr><td><a href='d'>d</a></td><td>15-Sep-2026 14:30</td><td>2.5M</td><td>123 &amp; description</td></tr>"
+        "<tr><td><a href='d'>d</a></td><td>15-Sep-2026 14:30</td><td>2.5M</td><td>123 &amp; description</td></tr>",
+        "<tr><td><a href='d'>d</a></td><td>15-Sep-2026</td><td>14:30</td><td>2.5M</td><td>log file</td></tr>",
+        "<tr>\n\t<td><a href='d'>d</a></td>\n\t<td>15-Sep-2026\t14:30</td><td>2.5\tMiB</td><td>log file</td></tr>"
     };
     for (size_t i = 0; i < sizeof tables / sizeof tables[0]; i++) {
         for (size_t chunk = 1; chunk <= strlen(tables[i]); chunk++) {

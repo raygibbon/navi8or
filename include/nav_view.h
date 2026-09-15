@@ -38,6 +38,7 @@ typedef struct {
     size_t top_line;
     size_t current_line;
     size_t horizontal_offset;
+    size_t link_column, link_length;
     bool wrap;
     bool line_numbers;
     size_t line_number_digits;
@@ -62,5 +63,8 @@ size_t nav_viewer_line_number_width(NavViewer *);
 void nav_viewer_note_visible_ordinal(NavViewer *, const NavViewCursor *);
 void nav_viewer_goto_line(NavViewer *,size_t,size_t);
 bool nav_viewer_find(NavViewer *,int,size_t,bool *);
+typedef struct { size_t column, length; } NavViewLink;
+bool nav_view_link_at(const char *, size_t, size_t, NavViewLink *);
+bool nav_viewer_link(NavViewer *, int, char *, size_t);
 
 #endif

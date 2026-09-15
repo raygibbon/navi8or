@@ -156,6 +156,8 @@ the target's glibc/kernel ABI, DNS configuration and runtime trust store.
 - Global Show Hidden toggle that refreshes both panes.
 - Keyboard menus with non-selectable separators and visibly disabled future items.
 - Context-sensitive menus: Commander permanently displays its menu bar and activates it with F2 or `Ctrl+\\`; the read-only Viewer uses `Ctrl+\\` for its own File/View/Search/Options/Help menu.
+- [Pane/fullscreen Viewer](docs/VIEWER.md) with separate resource Back history
+  and explicit View/Download/Browser/Copy actions for HTTP/HTTPS text links.
 - Cursor-aware, horizontally scrolling text fields shared by Filter, Find, and file-operation prompts.
 - An encrypted Basic/Bearer Vault backend behind the CredentialStore abstraction, with explicit lock/unlock and masked secret entry.
 - Scrollable Help and information windows, reusable confirmation dialogs, and two-path startup.

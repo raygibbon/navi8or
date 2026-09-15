@@ -11,8 +11,22 @@
 #include <string.h>
 #include <process.h>
 #include <bcrypt.h>
+#include <shellapi.h>
 
 uint64_t nav_platform_milliseconds(void) { return GetTickCount64(); }
+
+int nav_open_external_url(const char *url, char *error, size_t capacity)
+{
+    if (!nav_external_url_valid(url)) {
+        snprintf(error, capacity, "Invalid browser URL (embedded credentials are not allowed)"); return -1;
+    }
+    wchar_t *wide = nav_windows_wide(url);
+    HINSTANCE result = wide ? ShellExecuteW(NULL, L"open", wide, NULL, NULL, SW_SHOWNORMAL) : NULL;
+    free(wide);
+    if ((INT_PTR)result > 32) return 0;
+    snprintf(error, capacity, "Unable to launch default browser (Windows error %lld)", (long long)(INT_PTR)result);
+    return -1;
+}
 
 wchar_t *nav_windows_wide(const char *text)
 {

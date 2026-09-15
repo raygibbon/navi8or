@@ -12,8 +12,15 @@ void nav_ui_info(const char *, const char *const *, size_t);
 void nav_show_properties(const NavEntry *, const char *);
 int nav_ui_location_prompt(char *, size_t, NavUiRedrawFn, void *);
 int nav_ui_download(NavProvider *, const NavEntry *, const NavLocation *, const NavConfig *, NavUiRedrawFn, void *);
-int nav_view_file_from(NavProvider *, const NavEntry *, const NavConfig *, const NavLocation *);
-int nav_view_file(NavProvider *, const NavEntry *, const NavConfig *);
+/* Returns 1 on success, transferring provider ownership only if owned=true;
+ * never runs an input loop. Failure leaves provider ownership with the caller. */
+int nav_ui_viewer_open(NavApp *, NavProvider *, const NavEntry *, bool, NavUiRedrawFn, void *);
+void nav_ui_viewer_close(NavPane *);
+void nav_ui_viewer_draw(NavApp *, int);
+void nav_ui_viewer_dispatch(NavApp *, NavCommand);
+void nav_ui_viewer_menu_bar(const NavPane *);
+bool nav_ui_viewer_fullscreen(const NavPane *);
+NavInputContext nav_ui_active_context(const NavApp *);
 void nav_ui_request_quit(void);
 bool nav_ui_quit_requested(void);
 void nav_ui_binding_help(NavInputContext);

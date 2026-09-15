@@ -3,11 +3,15 @@
 
 /* Small OS boundaries; paths passed by the application are UTF-8. */
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <time.h>
 #include <sys/types.h>
 uint64_t nav_platform_milliseconds(void); /* monotonic, for UI throttling */
+/* HTTP(S) only; launches the default browser without a command shell. */
+int nav_open_external_url(const char *, char *, size_t);
+bool nav_external_url_valid(const char *);
 #ifdef _WIN32
 FILE *nav_platform_fopen(const char *, const char *);
 int nav_platform_mkdir(const char *, unsigned);

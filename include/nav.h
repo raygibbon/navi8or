@@ -116,7 +116,6 @@ typedef enum
 {
     NAV_MODE_COMMANDER,
     NAV_MODE_MENU,
-    NAV_MODE_VIEWER,
     NAV_MODE_DIALOG,
     NAV_MODE_PROMPT,
     NAV_MODE_HELP,
@@ -196,6 +195,8 @@ typedef struct
     NavLocation locations[NAV_HISTORY_MAX];
     int count, current, limit;
 } NavHistory;
+typedef enum { NAV_PANE_FILES, NAV_PANE_VIEWER } NavPaneContentMode;
+typedef struct NavPaneViewer NavPaneViewer;
 typedef struct
 {
     NavProvider *provider;
@@ -210,6 +211,8 @@ typedef struct
     int rows_per_column, visible_columns;
     int selected, offset;
     char filter[NAV_NAME_MAX];
+    NavPaneContentMode content_mode;
+    NavPaneViewer *viewer;
 } NavPane;
 typedef struct
 {

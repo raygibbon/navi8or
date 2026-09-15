@@ -60,7 +60,7 @@ void nav_keymap_defaults(NavKeymap *map)
     B(PANEL, "F3", VIEW); B(PANEL, "F4", EDIT); B(PANEL, "F5", COPY);
     B(PANEL, "F6", MOVE); B(PANEL, "F7", MKDIR); B(PANEL, "F8", DELETE);
     B(PANEL, "Ctrl+L", OPEN_LOCATION);
-    B(PANEL, "Tab", PANEL_SWITCH); B(PANEL, "Enter", OPEN);
+    B(GLOBAL, "Tab", PANEL_SWITCH); B(PANEL, "Enter", OPEN);
     B(PANEL, "Backspace", PANEL_PARENT); B(PANEL, "Ctrl+PgUp", PANEL_PARENT);
     B(PANEL, "Ctrl+PgDn", OPEN); B(PANEL, "Alt+Up", PANEL_PARENT);
     B(PANEL, "Alt+Left", HISTORY_BACK); B(PANEL, "Alt+Right", HISTORY_FORWARD);
@@ -73,7 +73,7 @@ void nav_keymap_defaults(NavKeymap *map)
     B(PANEL, "Ctrl+N F", HISTORY_FORWARD);
     B(PANEL, "Ctrl+V V", VIEW); B(PANEL, "Ctrl+S F", FILTER);
     B(PANEL, "Ctrl+R O", REPOSITORY_OPEN); B(PANEL, "Ctrl+R R", REFRESH);
-    B(PANEL, "Ctrl+R V", VAULT); B(PANEL, "Ctrl+P S", PANEL_SWITCH);
+    B(PANEL, "Ctrl+R V", VAULT); B(GLOBAL, "Ctrl+P S", PANEL_SWITCH);
     B(PANEL, "Ctrl+P W", PANEL_SWAP); B(PANEL, "Ctrl+P B", PANEL_BRIEF);
     B(PANEL, "Ctrl+P F", PANEL_FULL); B(PANEL, "Ctrl+T C", OPEN_CONFIG);
     B(PANEL, "Ctrl+T R", RELOAD_CONFIG); B(PANEL, "Ctrl+T T", THEME_INFO);

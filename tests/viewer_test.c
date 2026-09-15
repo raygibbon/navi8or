@@ -80,4 +80,34 @@ static void test_empty_binary_and_width(void){
     viewer.line_numbers=false;assert(nav_viewer_line_number_width(&viewer)==0);
 }
 
-int main(void){test_indexed_source_and_state();test_empty_binary_and_width();return 0;}
+static void test_links(void)
+{
+    const char *text = "Log: (https://example.com/a(b)). Next http://example.com/data?q=x&n=2, end";
+    NavViewLink link;
+    assert(nav_view_link_at(text, strlen(text), 12, &link));
+    assert(link.column == 6 && link.length == strlen("https://example.com/a(b)"));
+    assert(!nav_view_link_at(text, strlen(text), 0, &link));
+    assert(nav_view_link_at(text, strlen(text), 45, &link));
+    assert(link.length == strlen("http://example.com/data?q=x&n=2"));
+    assert(!nav_view_link_at("https://", 8, 0, &link));
+    char path[] = "/tmp/nav-view-links-XXXXXX", error[128], url[4096];
+    int fd = mkstemp(path); assert(fd >= 0);
+    FILE *file = fdopen(fd, "w"); assert(file);
+    fprintf(file, "%s\nno links\nhttps://example.com/last\n", text); fclose(file);
+    bool binary;
+    NavViewSource *source = nav_view_source_open_local(path, &binary, error, sizeof error); assert(source);
+    NavViewer viewer; nav_viewer_init(&viewer, source);
+    assert(nav_viewer_link(&viewer, 1, url, sizeof url));
+    assert(!strcmp(url, "https://example.com/a(b)"));
+    assert(nav_viewer_link(&viewer, 0, url, sizeof url));
+    assert(nav_viewer_link(&viewer, 1, url, sizeof url));
+    assert(!strcmp(url, "http://example.com/data?q=x&n=2"));
+    assert(nav_viewer_link(&viewer, 1, url, sizeof url)); assert(viewer.current_line == 2);
+    assert(nav_viewer_link(&viewer, -1, url, sizeof url)); assert(viewer.current_line == 0);
+    assert(!strcmp(url, "http://example.com/data?q=x&n=2"));
+    assert(nav_viewer_link(&viewer, -1, url, sizeof url));
+    assert(!nav_viewer_link(&viewer, -1, url, sizeof url));
+    source->close(source); unlink(path);
+}
+
+int main(void){test_indexed_source_and_state();test_empty_binary_and_width();test_links();return 0;}

@@ -690,7 +690,10 @@ static void listing_finish_row(HttpListingParser *parser)
          * Do not skip empty size cells and consume numeric descriptions. */
         const char *first = original;
         while (isspace((unsigned char)*first)) first++;
-        const char *boundary = strchr(first, '\t');
+        const char *clock_field = first;
+        while (*clock_field && !isspace((unsigned char)*clock_field)) clock_field++;
+        while (isspace((unsigned char)*clock_field)) clock_field++;
+        const char *boundary = strchr(clock_field, '\t');
         if (parser->table_row && boundary && size_text == cursor) size_text = boundary + 1;
         else if (parser->table_row && size_text == original) {
             const char *leading = original;

@@ -266,7 +266,8 @@ static void draw_global_status(const NavApp *app, const NavCommanderLayout *layo
 static bool bar_available(void *data, NavCommand command)
 { return command_available(data, command); }
 static void draw_function_key_bar(const NavApp *app, const NavCommanderLayout *layout)
-{ nav_ui_command_bar(layout->key_bar_row, layout->width, NAV_CONTEXT_PANEL, bar_available, (void *)app); }
+{ nav_ui_command_bar(layout->key_bar_row, layout->width, nav_ui_active_context(app),
+                      nav_ui_active_context(app) == NAV_CONTEXT_PANEL ? bar_available : NULL, (void *)app); }
 
 static void draw_app(void *data)
 {
@@ -281,39 +282,38 @@ static void draw_app(void *data)
         nav_ui_text(0, 0, width, "Terminal too small", NAV_STYLE_MENU);
         return;
     }
-    if (app->config.show_menu) draw_commander_menu_bar();
-    draw_pane_title(&app->panes[0], layout.pane_x[0], layout.pane_title_row,
-                    layout.pane_width[0], 'L', app->active == 0, profile);
-    draw_pane_title(&app->panes[1], layout.pane_x[1], layout.pane_title_row,
-                    layout.pane_width[1], 'R', app->active == 1, profile);
-    draw_pane_location(&app->panes[0], layout.pane_x[0], layout.pane_location_row,
-                       layout.pane_width[0]);
-    draw_pane_location(&app->panes[1], layout.pane_x[1], layout.pane_location_row,
-                       layout.pane_width[1]);
-    draw_pane_columns(&app->panes[0], layout.pane_x[0],
-                      layout.pane_column_header_row, layout.pane_width[0], &app->config);
-    draw_pane_columns(&app->panes[1], layout.pane_x[1],
-                      layout.pane_column_header_row, layout.pane_width[1], &app->config);
-    if (layout.pane_column_separator_row >= 0) {
-        nav_term_hline(layout.pane_x[0], layout.pane_column_separator_row, 0xc4,
-                       layout.pane_width[0], app->active == 0 ? NAV_STYLE_BORDER_ACTIVE
-                                                             : NAV_STYLE_BORDER);
-        nav_term_hline(layout.pane_x[1], layout.pane_column_separator_row, 0xc4,
-                       layout.pane_width[1], app->active == 1 ? NAV_STYLE_BORDER_ACTIVE
-                                                             : NAV_STYLE_BORDER);
+    if (app->config.show_menu) {
+        if (nav_ui_active_context(app) == NAV_CONTEXT_VIEWER) nav_ui_viewer_menu_bar(&app->panes[app->active]);
+        else draw_commander_menu_bar();
     }
-    draw_pane_body(&app->panes[0], layout.pane_x[0], layout.pane_width[0],
-                   layout.body_top, layout.body_height, app->active == 0, &app->config);
-    draw_pane_body(&app->panes[1], layout.pane_x[1], layout.pane_width[1],
-                   layout.body_top, layout.body_height, app->active == 1, &app->config);
-    draw_pane_summary(&app->panes[0], layout.pane_x[0], layout.summary_row,
-                      layout.pane_width[0], app->active == 0, profile);
-    draw_pane_summary(&app->panes[1], layout.pane_x[1], layout.summary_row,
-                      layout.pane_width[1], app->active == 1, profile);
+    if (nav_ui_viewer_fullscreen(&app->panes[app->active])) {
+        nav_ui_viewer_draw(app, app->active);
+        if (app->config.show_function_bar) draw_function_key_bar(app, &layout);
+        nav_term_hide_cursor(); return;
+    }
+    for (int i = 0; i < 2; i++) {
+        NavPane *pane = &app->panes[i];
+        if (pane->content_mode == NAV_PANE_VIEWER) { nav_ui_viewer_draw(app, i); continue; }
+        int x = layout.pane_x[i], w = layout.pane_width[i]; bool active = app->active == i;
+        draw_pane_title(pane, x, layout.pane_title_row, w, i ? 'R' : 'L', active, profile);
+        draw_pane_location(pane, x, layout.pane_location_row, w);
+        draw_pane_columns(pane, x, layout.pane_column_header_row, w, &app->config);
+        if (layout.pane_column_separator_row >= 0)
+            nav_term_hline(x, layout.pane_column_separator_row, 0xc4, w, active ? NAV_STYLE_BORDER_ACTIVE : NAV_STYLE_BORDER);
+        draw_pane_body(pane, x, w, layout.body_top, layout.body_height, active, &app->config);
+        draw_pane_summary(pane, x, layout.summary_row, w, active, profile);
+    }
     nav_term_vline(layout.divider, layout.pane_title_row, 0xb3,
                    layout.summary_row - layout.pane_title_row + 1,
                    NAV_STYLE_BORDER);
-    if (app->config.show_status) draw_global_status(app, &layout, profile);
+    if (app->config.show_status) {
+        if (nav_ui_active_context(app) == NAV_CONTEXT_VIEWER) {
+            char key[80], status[128];
+            nav_ui_hint_key(NAV_CONTEXT_VIEWER, NAV_CMD_PANEL_SWITCH, false, key, sizeof key);
+            snprintf(status, sizeof status, "Viewer  %s Switch Pane", key);
+            nav_ui_text(0, layout.status_row, width, status, NAV_STYLE_STATUS);
+        } else draw_global_status(app, &layout, profile);
+    }
     if (app->config.show_function_bar) draw_function_key_bar(app, &layout);
     nav_term_hide_cursor();
 }
@@ -665,9 +665,9 @@ static void command_open_location(NavApp *app)
             }
         }
         if (action == 1) nav_ui_download(provider, &resource, &origin, &app->config, draw_app, app);
-        else nav_view_file_from(provider, &resource, &app->config, &origin);
+        else if (nav_ui_viewer_open(app, provider, &resource, owned, draw_app, app)) owned = false;
         if (owned) nav_provider_destroy(provider);
-        refresh_pane(app, pane);
+        if (action == 1) refresh_pane(app, pane);
         return;
     }
     if (pane->provider != provider) {
@@ -1414,11 +1414,20 @@ static void command_theme_info(NavApp *app)
 static void dispatch(NavApp *app, NavCommand command)
 {
     NavPane *pane = &app->panes[app->active];
+    /* Focus belongs to the application, not to either content controller. */
+    if (command == NAV_CMD_PANEL_SWITCH) {
+        if (!nav_ui_viewer_fullscreen(pane)) app->active = !app->active;
+        return;
+    }
+    if (pane->content_mode == NAV_PANE_VIEWER && command != NAV_CMD_QUIT &&
+        command != NAV_CMD_PREFERENCES && command != NAV_CMD_PROFILE_SAVE &&
+        command != NAV_CMD_PROFILE_SAVE_AS && command != NAV_CMD_VAULT) {
+        nav_ui_viewer_dispatch(app, command); return;
+    }
     switch (command)
     {
     case NAV_CMD_MENU: open_menu(app); break;
     case NAV_CMD_OPEN: activate(app, pane); break;
-    case NAV_CMD_PANEL_SWITCH: app->active = !app->active; break;
     case NAV_CMD_PANEL_PARENT: navigate_parent(app, pane, true); break;
     case NAV_CMD_PANEL_SWAP: {
         NavPane temporary = app->panes[0];
@@ -1465,11 +1474,7 @@ static void dispatch(NavApp *app, NavCommand command)
         const NavEntry *entry = nav_pane_selected(pane);
         if (entry && !(entry->flags & NAV_ENTRY_DIR) && nav_provider_supports(pane->provider, NAV_CAP_READ))
         {
-            assert(app->mode == NAV_MODE_COMMANDER);
-            app->previous_mode = app->mode;
-            app->mode = NAV_MODE_VIEWER;
-            nav_view_file_from(pane->provider, entry, &app->config, &pane->location);
-            app->mode = app->previous_mode;
+            nav_ui_viewer_open(app, pane->provider, entry, false, draw_app, app);
         }
         break;
     }
@@ -1670,14 +1675,16 @@ int nav_ui_run(NavApp *app)
             nav_ui_input_configure(&app->config);
         }
         NavAction event;
-        NavPane *pane = &app->panes[app->active];
+        NavInputContext context = nav_ui_active_context(app);
+        if (nav_ui_workspace_context() != context) nav_ui_workspace(context);
         present_app(app);
-        if (nav_ui_input(NAV_CONTEXT_PANEL, &event) <= 0)
+        if (nav_ui_input(context, &event) <= 0)
             continue;
         if (event.type == NAV_TERM_EVENT_RESIZE)
         {
             for (int i = 0; i < 2; i++)
             {
+                if (app->panes[i].content_mode == NAV_PANE_VIEWER) continue;
                 nav_pane_clamp_selection(&app->panes[i]);
                 nav_pane_ensure_visible(&app->panes[i]);
             }
@@ -1686,9 +1693,13 @@ int nav_ui_run(NavApp *app)
         if (event.type != NAV_TERM_EVENT_KEY)
             continue;
         dispatch(app, event.command);
-        nav_pane_clamp_selection(pane);
-        nav_pane_ensure_visible(pane);
+        NavPane *pane = &app->panes[app->active];
+        if (pane->content_mode == NAV_PANE_FILES) {
+            nav_pane_clamp_selection(pane);
+            nav_pane_ensure_visible(pane);
+        }
     }
+    for (int i = 0; i < 2; i++) nav_ui_viewer_close(&app->panes[i]);
     nav_term_shutdown();
     free(app->profile_saved); app->profile_saved = NULL;
     free(app->settings_saved); app->settings_saved = NULL;

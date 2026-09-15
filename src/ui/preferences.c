@@ -61,6 +61,8 @@ static const Setting *settings(Page page, size_t *count)
 }
 static NavInputContext default_context(NavCommand command)
 {
+    if (command >= NAV_CMD_VIEWER_FULLSCREEN && command <= NAV_CMD_VIEWER_BACK)
+        return NAV_CONTEXT_VIEWER;
     NavKeymap map; nav_keymap_defaults(&map);
     for (size_t i = 0; i < map.count; i++) if (map.bindings[i].command == command) return map.bindings[i].context;
     return NAV_CONTEXT_PANEL;

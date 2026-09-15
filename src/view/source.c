@@ -236,6 +236,10 @@ static const char *remote_cursor_line(NavViewSource *source,
     unsigned char ch;
     int result;
     while ((result = remote_byte(remote, offset, &ch)) > 0 && ch != '\n') {
+        if (ch == 0) {
+            snprintf(remote->error, sizeof remote->error, "This resource does not appear to be text (binary NUL data). Download it instead.");
+            return NULL;
+        }
         if (used >= REMOTE_LINE_LIMIT) {
             snprintf(remote->error, sizeof remote->error,
                      "Line exceeds remote Viewer limit (8 MiB)");

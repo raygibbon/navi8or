@@ -213,6 +213,9 @@ location = ["Ctrl+L", "Ctrl+N O"]
 "theme.info" = "Ctrl+T T"
 
 [keys.viewer.commands]
+# Menu actions viewer.toggle_fullscreen, viewer.open_link, viewer.next_link,
+# viewer.previous_link and viewer.back have no fixed default keys. Bind here
+# or in Preferences → Key Bindings → Viewer if desired.
 "viewer.close" = ["Escape", "Ctrl+Q", "F10"]
 "search.find" = ["Ctrl+S", "/"]
 "search.next" = "F5"

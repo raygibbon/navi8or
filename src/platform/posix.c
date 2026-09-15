@@ -1,5 +1,6 @@
 #include "nav.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,46 @@ uint64_t nav_platform_milliseconds(void)
     struct timespec now = {0};
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
+int nav_open_external_url(const char *url, char *error, size_t capacity)
+{
+    if (!nav_external_url_valid(url)) {
+        snprintf(error, capacity, "Invalid browser URL (embedded credentials are not allowed)"); return -1;
+    }
+    /* Double fork keeps the browser outside Navi8or's process lifecycle;
+     * the pipe reports exec failure rather than silently claiming success. */
+    int pipefd[2];
+    if (pipe(pipefd)) goto failure;
+    if (fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) < 0) {
+        close(pipefd[0]); close(pipefd[1]); goto failure;
+    }
+    pid_t child = fork();
+    if (child == 0) {
+        close(pipefd[0]);
+        pid_t browser = fork();
+        if (browser == 0) {
+            int nullfd = open("/dev/null", O_RDWR);
+            if (nullfd >= 0) {
+                dup2(nullfd, STDIN_FILENO); dup2(nullfd, STDOUT_FILENO); dup2(nullfd, STDERR_FILENO);
+                if (nullfd > STDERR_FILENO) close(nullfd);
+            }
+            execlp("xdg-open", "xdg-open", url, (char *)NULL);
+        } else if (browser > 0) _exit(0);
+        int saved = errno; ssize_t reported = write(pipefd[1], &saved, sizeof saved);
+        (void)reported; _exit(127);
+    }
+    close(pipefd[1]);
+    if (child < 0) { close(pipefd[0]); goto failure; }
+    int status, saved = 0;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) { }
+    ssize_t got;
+    do { got = read(pipefd[0], &saved, sizeof saved); } while (got < 0 && errno == EINTR);
+    close(pipefd[0]);
+    if (got == 0) return 0;
+    errno = saved ? saved : EIO;
+failure:
+    snprintf(error, capacity, "Unable to launch default browser: %s", strerror(errno)); return -1;
 }
 
 int nav_platform_config_dir(char *path, size_t capacity)

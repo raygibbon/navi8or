@@ -14,7 +14,7 @@ CPPFLAGS += -D_WINDOWS -D_WIN32_WINNT=0x0601 -DCURL_STATICLIB -DSODIUM_STATIC \
     -Ibuild/windows -Ibuild/generated -Iinclude -Ithird_party -isystem $(WINDOWS_DEPS_PREFIX)/include
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror -MMD -MP
-LDLIBS += $(WINDOWS_DEPS_PREFIX)/lib/libcurl.a $(WINDOWS_DEPS_PREFIX)/lib/libsodium.a \
+LDLIBS += -lshell32 $(WINDOWS_DEPS_PREFIX)/lib/libcurl.a $(WINDOWS_DEPS_PREFIX)/lib/libsodium.a \
     $(WINDOWS_DEPS_PREFIX)/lib/libsmb2.a -lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -lsecur32 -liphlpapi -lshlwapi -lwldap32 -luser32
 SOURCES := $(filter-out src/platform/posix.c src/platform/secure_file_posix.c src/path.c src/provider/local.c,$(shell find src -name '*.c' | sort))
 OBJECTS := $(SOURCES:src/%.c=build/windows/%.o) build/windows/toml.o
@@ -59,8 +59,8 @@ WINDOWS_TEST_RUNNER ?=
 windows-error-test: verify-windows-toolchain
 	@mkdir -p build/windows
 	$(CC) $(CPPFLAGS) $(CFLAGS) -UNDEBUG -Isrc -DNAV_SECURE_FILE_TESTING \
-		tests/windows_error_test.c $(filter src/platform/secure_file_win32.c src/platform/windows.c,$(SOURCES)) \
-		$(LDFLAGS) -static-libgcc -o build/windows/windows-error-test.exe -lbcrypt -ladvapi32
+		tests/windows_error_test.c $(filter src/platform/secure_file_win32.c src/platform/windows.c src/platform/external_url.c,$(SOURCES)) \
+		$(LDFLAGS) -static-libgcc -o build/windows/windows-error-test.exe -lbcrypt -ladvapi32 -lshell32
 	@if [ -n "$(WINDOWS_TEST_RUNNER)" ]; then \
 		$(WINDOWS_TEST_RUNNER) build/windows/windows-error-test.exe; \
 	elif command -v wine >/dev/null 2>&1; then \
