@@ -1,4 +1,5 @@
 TARGET ?= native
+export PYTHONDONTWRITEBYTECODE := 1
 .DEFAULT_GOAL := all
 include cmake/version.mk
 ifeq ($(TARGET),windows)
@@ -88,6 +89,12 @@ override LDLIBS += $(CURL_LIBS) $(SODIUM_LIBS) $(SMB2_LIBS)
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
 CFLAGS += -MMD -MP
+ifeq ($(BUILD_MODE),release)
+OBJECT_DIR := build/release/objects/linux
+CFLAGS += -ffunction-sections -fdata-sections -ffile-prefix-map=$(CURDIR)=/src
+LDFLAGS += -Wl,--gc-sections
+endif
+APP_BINARY ?= nav
 
 SOURCES := $(filter-out %_win32.c src/platform/windows.c,$(shell find src -name '*.c' | sort))
 OBJECTS := $(SOURCES:src/%.c=$(OBJECT_DIR)/%.o)
@@ -98,7 +105,7 @@ SODIUM_OBJECTS := $(OBJECT_DIR)/credential/vault.o
 -include $(DEPS)
 
 .PHONY: all clean check core-test control-test terminal-test viewer-test config-test input-test input-integration-test theme-test vault-test provider-test smb-path-test http-test resize-test credential-picker-test asan asan-check verify-vendor verify-curl verify-libsodium verify-libsmb2 dist dist-check
-all: nav
+all: $(APP_BINARY)
 $(OBJECTS): | $(VERSION_HEADER)
 control-test: $(VERSION_HEADER)
 .PHONY: version-test
@@ -106,7 +113,8 @@ check: version-test
 version-test: version-header
 	python3 tests/version_test.py
 
-nav: $(OBJECTS) $(OBJECT_DIR)/toml.o $(LINUX_ARCHIVES) | verify-curl verify-libsodium verify-libsmb2
+$(APP_BINARY): $(OBJECTS) $(OBJECT_DIR)/toml.o $(LINUX_ARCHIVES) | verify-curl verify-libsodium verify-libsmb2
+	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $(OBJECTS) $(OBJECT_DIR)/toml.o $(LDLIBS)
 
 build:
@@ -152,13 +160,10 @@ verify-libsmb2:
 		echo "error: libsmb2 development files are required; provide pkg-config libsmb2 or set CPPFLAGS, LDFLAGS and LDLIBS for your installed headers/library" >&2; \
 		exit 1; }
 
-DIST_ARCHIVE := navi8or-source.tar.gz
+DIST_ARCHIVE := build/release/navi8or-source.tar.gz
 
 dist: verify-vendor
-	set -eu; temp=$$(mktemp -d); trap 'rm -rf "$$temp"' EXIT; \
-	mkdir -p "$$temp/navi8or"; \
-	cp -R Makefile VERSION README.md .gitignore cmake scripts include src tests themes third_party docs "$$temp/navi8or/"; \
-	tar -C "$$temp" -czf "$(CURDIR)/$(DIST_ARCHIVE)" navi8or
+	python3 scripts/release.py source
 
 dist-check: dist
 	set -eu; temp=$$(mktemp -d); trap 'rm -rf "$$temp"' EXIT; \
@@ -168,8 +173,9 @@ dist-check: dist
 	test -s "$$temp/navi8or/third_party/toml.h"; \
 	test -s "$$temp/navi8or/themes/classic-dos.toml"; \
 	test -s "$$temp/navi8or/tests/theme_test.c"; \
-	test -s "$$temp/navi8or/docs/TDX_UI_REFERENCE.md"; \
-	test -s "$$temp/navi8or/docs/UI_DESIGN.md"; \
+	test -s "$$temp/navi8or/LICENSE"; \
+	test -s "$$temp/navi8or/THIRD_PARTY_NOTICES.md"; \
+	test -s "$$temp/navi8or/docs/BUILDING.md"; \
 	! test -e "$$temp/navi8or/build"; \
 	! test -e "$$temp/navi8or/nav"; \
 	$(MAKE) -C "$$temp/navi8or" check
@@ -268,6 +274,10 @@ smb-path-test: | build
 HTTP_TEST_SOURCES := src/provider/smb.c src/provider/smb_path.c src/provider/registry.c src/provider/http.c src/provider/local.c src/config.c src/theme.c src/symbols.c $(INPUT_SOURCES) src/credential/store.c src/credential/vault.c src/platform/secure_file_posix.c src/platform/posix.c src/platform/external_url.c src/commander.c src/ui/layout.c src/path.c src/view/source.c src/view/viewer.c src/transfer/transfer.c third_party/toml.c
 
 .PHONY: network-test
+.PHONY: release-profile-test
+release-profile-test: $(APP_BINARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/release_profile_test.c $(filter-out $(OBJECT_DIR)/main.o,$(OBJECTS)) $(OBJECT_DIR)/toml.o $(LDFLAGS) -o build/release-profile-test $(LDLIBS)
+check: release-check-test
 check: network-test
 check: identity-test
 .PHONY: identity-test
@@ -306,3 +316,4 @@ clean:
 	rm -f nav
 
 endif
+include cmake/release.mk

@@ -14,14 +14,22 @@ CPPFLAGS += -D_WINDOWS -D_WIN32_WINNT=0x0601 -DCURL_STATICLIB -DSODIUM_STATIC \
     -Ibuild/windows -Ibuild/generated -Iinclude -Ithird_party -isystem $(WINDOWS_DEPS_PREFIX)/include
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror -MMD -MP
+OBJECT_DIR := build/windows
+ifeq ($(BUILD_MODE),release)
+OBJECT_DIR := build/release/objects/windows
+CFLAGS += -ffunction-sections -fdata-sections -ffile-prefix-map=$(CURDIR)=/src
+LDFLAGS += -Wl,--gc-sections -Wl,--no-insert-timestamp
+endif
+APP_BINARY ?= build/windows/nav.exe
+SMB2_LIBS ?= $(WINDOWS_DEPS_PREFIX)/lib/libsmb2.a
 LDLIBS += -lshell32 $(WINDOWS_DEPS_PREFIX)/lib/libcurl.a $(WINDOWS_DEPS_PREFIX)/lib/libsodium.a \
-    $(WINDOWS_DEPS_PREFIX)/lib/libsmb2.a -lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -lsecur32 -liphlpapi -lshlwapi -lwldap32 -luser32
+    $(SMB2_LIBS) -lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -lsecur32 -liphlpapi -lshlwapi -lwldap32 -luser32
 SOURCES := $(filter-out src/platform/posix.c src/platform/secure_file_posix.c src/path.c src/provider/local.c,$(shell find src -name '*.c' | sort))
-OBJECTS := $(SOURCES:src/%.c=build/windows/%.o) build/windows/toml.o
+OBJECTS := $(SOURCES:src/%.c=$(OBJECT_DIR)/%.o) $(OBJECT_DIR)/toml.o
 -include $(OBJECTS:.o=.d)
 
 .PHONY: all clean dist windows-deps verify-windows-deps verify-windows-toolchain verify-windows-host-tools windows-inspect windows-error-test
-all: dist/windows/nav.exe
+all: $(APP_BINARY)
 windows-deps: verify-windows-host-tools
 	WINDOWS_DEPS_PREFIX='$(WINDOWS_DEPS_PREFIX)' sh scripts/build-windows-deps.sh
 verify-windows-host-tools:
@@ -42,14 +50,14 @@ build/windows/termbox2/termbox2.h: third_party/termbox2/termbox2.h third_party/t
 		mv "$@.tmp" "$@"
 $(OBJECTS): | verify-windows-deps
 $(OBJECTS): | $(VERSION_HEADER)
-build/windows/terminal/termbox_backend.o build/windows/terminal/termbox_input.o: build/windows/termbox2/termbox2.h
-build/windows/%.o: src/%.c
+$(OBJECT_DIR)/terminal/termbox_backend.o $(OBJECT_DIR)/terminal/termbox_input.o: build/windows/termbox2/termbox2.h
+$(OBJECT_DIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
-build/windows/toml.o: third_party/toml.c
+$(OBJECT_DIR)/toml.o: third_party/toml.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
-dist/windows/nav.exe: $(OBJECTS) cmake/windows.mk
+$(APP_BINARY): $(OBJECTS) cmake/windows.mk
 	@mkdir -p $(dir $@)
 	# NavApp and nested configuration locals exceed MinGW's default 2 MiB stack.
 	$(CC) $(LDFLAGS) -Wl,--stack,8388608 -static-libgcc -o $@ $(OBJECTS) $(LDLIBS)
@@ -70,12 +78,10 @@ windows-error-test: verify-windows-toolchain
 	else \
 		echo 'Windows error test compiled; runtime execution unavailable because Wine is not installed.'; \
 	fi
-windows-inspect: dist/windows/nav.exe
+windows-inspect: $(APP_BINARY)
 	file $<
 	$(OBJDUMP) -p $< | sed -n '/DLL Name:/p'
-dist: dist/windows/nav.exe
-	cp docs/WINDOWS_BUILD.md dist/windows/README.md
-	mkdir -p dist/windows/themes
-	cp -R themes/. dist/windows/themes/
+dist:
+	python3 scripts/release.py source
 clean:
 	rm -rf build/windows dist/windows
