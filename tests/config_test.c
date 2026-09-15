@@ -28,6 +28,9 @@ static void test_explicit_config(void)
 {
     char root[] = "/tmp/nav-explicit-XXXXXX", path[4096], missing[4096], error[256];
     NavConfig config;
+    nav_config_defaults(&config);
+    assert(config.show_app_identity);
+    assert(config.proxy_mode == NAV_PROXY_SYSTEM);
     assert(mkdtemp(root));
     path_join(path, sizeof path, root, "custom.toml");
     path_join(missing, sizeof missing, root, "missing.toml");
@@ -40,17 +43,25 @@ static void test_explicit_config(void)
     assert(nav_config_load_file(&config, path, error, sizeof error) == 0);
     assert(config.explicit_config && !strcmp(config.config_path, path));
     assert(config.show_hidden && !strcmp(config.theme_name, "classic-dos"));
+    file = fopen(path, "a"); assert(file); fputs("[network]\nproxy_mode = \"none\"\n", file); fclose(file);
+    assert(nav_config_load_file(&config, path, error, sizeof error) == 0);
+    assert(config.proxy_mode == NAV_PROXY_NONE);
     assert(nav_config_save_repositories(&config, error, sizeof error) == 0);
     char sidecar[4096]; path_join(sidecar, sizeof sidecar, root, "repositories.toml");
     assert(access(sidecar, F_OK) == 0); unlink(sidecar);
     NavInput input = {0}; NavTermEvent event = {.type = NAV_TERM_EVENT_KEY, .key = NAV_KEY_F5};
     assert(nav_input_resolve(&input, &config.keymap, NAV_CONTEXT_PANEL, &event).command == NAV_CMD_VIEW);
+    file = fopen(path, "w"); assert(file); fputs("[network]\nproxy_mode = \"system\"\n", file); fclose(file);
+    assert(!nav_config_load_file(&config, path, error, sizeof error) && config.proxy_mode == NAV_PROXY_SYSTEM);
     const char *invalid[] = {
         "[keys.panel]\n\"F5\" = \"does.not.exist\"\n",
         "[keys.panel]\n\"F5\" = \"file.copy\"\n\"f5\" = \"file.view\"\n",
         "[keys.panel]\n\"Ctrl+F\" = \"file.copy\"\n",
         "[keys.invalid]\n\"F5\" = \"file.copy\"\n",
         "[keys.panel]\n\"F5\" = 42\n"
+        , "[network]\nproxy_mode = \"custom\"\n"
+        , "[network]\nproxy_mode = false\n"
+        , "network = 1\n"
     };
     for (size_t i = 0; i < sizeof invalid / sizeof *invalid; i++) {
         file = fopen(path, "w"); assert(file); fputs(invalid[i], file); fclose(file);

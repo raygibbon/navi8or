@@ -23,19 +23,40 @@ Normal editing does not overwrite a bundled template.
 ## Editing inside Navi8or
 
 Open **Options → Preferences**, or use the default `Ctrl+T P` sequence.
-One scrollable editor contains Profile Template/Name, Colours, Layout, Panels,
-Viewer, Key Bindings and Shortcut Display. Colours expose the semantic roles
-and their foreground/background in the existing 16-color model. Enter/Left/Right
-cycle real settings; date format and profile name use existing text fields.
-No internal-editor presentation options are offered: F4 launches the configured
-external editor, whose operational arguments stay in `nav.toml`.
+The category sidebar contains General, Panels, Viewer, Editor,
+Appearance/Profile, Key Bindings and Network. Appearance/Profile groups the
+existing template/name, Colours, Layout and Shortcut Display editors. There are
+no placeholder categories. Repository management remains in its existing menu.
+Colours expose semantic foreground/background roles in the 16-color model.
+`[layout] show_app_identity = true` (default, explicit in all four templates)
+shows the application name and source version on the right of the menu bar.
+It falls back to name-only, then hidden, without moving or shortening menus.
+Set it to `false` to hide it, or toggle Show App Identity under Appearance/Profile
+→ Layout. Like other appearance options, it previews and saves in the UI profile.
+Enter (or Space) toggles checkboxes or opens a select picker; Up/Down chooses,
+Enter confirms, and Cancel leaves the previous value intact. Text settings reuse
+the existing text fields. Editor exposes the external command and wait option;
+its arguments remain in operational `nav.toml`, not a UI profile.
 
-Changes preview immediately. **Apply** (default F4 inside Preferences) keeps the
-live configuration and closes the editor. **Cancel** on its home page restores
-the opening configuration and pane presentation; Escape within a subpage first
-returns home. **Save** applies, saves atomically and closes on success. A canceled
-or failed save leaves the editor open. The asterisk marks unsaved differences;
-restoring saved values clears it.
+Existing configurable navigation commands are retained without changing default
+bindings: Up/Down selects a category, Right/Enter enters settings, Left returns
+to categories, and Down past the last setting reaches Apply/Save/Cancel buttons.
+Left/Right selects a button and Enter activates it. Escape backs out of an
+appearance subpage, then settings, then the dialog. No new default Tab binding
+is introduced. Scrolling preserves access at small terminal sizes.
+
+Appearance changes preview immediately; Network is staged until Apply or Save.
+**Apply** (default F4 inside Preferences) keeps runtime changes and closes without
+writing files. **Cancel** restores the opening configuration and pane presentation,
+with confirmation only when this session has changed values. **Save** (default F2)
+applies, saves changed operational settings to `nav.toml` and changed UI settings
+to a personal profile, and closes on success. Each file replacement is atomic;
+the two files are not a single filesystem transaction. A canceled or failed save
+leaves the editor open. Network-only Save never prompts for or creates a profile.
+The asterisk marks unsaved differences; restoring saved values clears it.
+After Apply, unsaved operational changes also participate in quit/reload prompts.
+
+See [Network preferences](NETWORK.md) for proxy policy and its verification.
 
 The Key Bindings page has a context row (Panel, Viewer, Global, dialogs, etc.).
 Each command shows its effective bindings and an inherited/override/unbound
@@ -98,7 +119,10 @@ screen rendering and indicate truncation.
 
 Flat `[keys]` accepts short operation names and quoted canonical names from
 [the shared command metadata](../include/nav_commands.def). Multiple strings and
-two-key sequences are supported. For explicit context-specific command overrides:
+two-key sequences are supported. The bundled `themes/classic-dos.toml` is the
+complete reference: it spells out every compiled fallback binding, grouped by
+global, panel, Viewer, menu, dialog, confirmation, picker, vault, and Preferences
+contexts. For explicit context-specific command overrides:
 
 ```toml
 [keys.viewer.commands]
@@ -107,9 +131,11 @@ two-key sequences are supported. For explicit context-specific command overrides
 ```
 
 This uses the same command/sequence parser as flat bindings. The historical
-Legacy compatibility syntax `[keys.viewer] "F5" = "search.next"` remains supported. Explicit duplicate
-or prefix-conflicting keys in overlapping contexts are rejected with the key
-and commands. Saves use sparse command arrays rather than dumping inherited defaults.
+Legacy compatibility syntax `[keys.viewer] "F5" = "search.next"` remains supported.
+Explicit duplicate or prefix-conflicting keys in the same context are rejected
+with the key, commands, and profile path. The same key in separate contexts is
+valid; the active context wins before the global fallback. Saves use sparse
+command arrays rather than dumping inherited defaults.
 
 Key syntax includes F1–F12, Enter, Escape/Esc, Tab, Backspace, Delete, Insert,
 Home, End, PageUp/PgUp, PageDown/PgDn, arrows, ASCII characters, Ctrl/Alt/Shift

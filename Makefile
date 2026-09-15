@@ -1,4 +1,6 @@
 TARGET ?= native
+.DEFAULT_GOAL := all
+include cmake/version.mk
 ifeq ($(TARGET),windows)
 include cmake/windows.mk
 else
@@ -81,7 +83,7 @@ CURL_LIBS := $(if $(CURL_CONFIG),$(shell $(CURL_CONFIG) --libs))
 SODIUM_CFLAGS := $(if $(SODIUM_CONFIG),$(shell $(SODIUM_CONFIG) --cflags))
 SODIUM_LIBS := $(if $(SODIUM_CONFIG),$(shell $(SODIUM_CONFIG) --libs))
 endif
-override CPPFLAGS += -D_POSIX_C_SOURCE=200809L -Iinclude -Ithird_party $(CURL_CFLAGS) $(SODIUM_CFLAGS) $(SMB2_CFLAGS)
+override CPPFLAGS += -D_POSIX_C_SOURCE=200809L -Ibuild/generated -Iinclude -Ithird_party $(CURL_CFLAGS) $(SODIUM_CFLAGS) $(SMB2_CFLAGS)
 override LDLIBS += $(CURL_LIBS) $(SODIUM_LIBS) $(SMB2_LIBS)
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
@@ -97,6 +99,12 @@ SODIUM_OBJECTS := $(OBJECT_DIR)/credential/vault.o
 
 .PHONY: all clean check core-test control-test terminal-test viewer-test config-test input-test input-integration-test theme-test vault-test provider-test smb-path-test http-test resize-test credential-picker-test asan asan-check verify-vendor verify-curl verify-libsodium verify-libsmb2 dist dist-check
 all: nav
+$(OBJECTS): | $(VERSION_HEADER)
+control-test: $(VERSION_HEADER)
+.PHONY: version-test
+check: version-test
+version-test: version-header
+	python3 tests/version_test.py
 
 nav: $(OBJECTS) $(OBJECT_DIR)/toml.o $(LINUX_ARCHIVES) | verify-curl verify-libsodium verify-libsmb2
 	$(CC) $(LDFLAGS) -o $@ $(OBJECTS) $(OBJECT_DIR)/toml.o $(LDLIBS)
@@ -149,7 +157,7 @@ DIST_ARCHIVE := navi8or-source.tar.gz
 dist: verify-vendor
 	set -eu; temp=$$(mktemp -d); trap 'rm -rf "$$temp"' EXIT; \
 	mkdir -p "$$temp/navi8or"; \
-	cp -R Makefile README.md .gitignore cmake scripts include src tests themes third_party docs "$$temp/navi8or/"; \
+	cp -R Makefile VERSION README.md .gitignore cmake scripts include src tests themes third_party docs "$$temp/navi8or/"; \
 	tar -C "$$temp" -czf "$(CURDIR)/$(DIST_ARCHIVE)" navi8or
 
 dist-check: dist
@@ -242,6 +250,16 @@ smb-path-test: | build
 	./build/smb-path-test
 
 HTTP_TEST_SOURCES := src/provider/smb.c src/provider/smb_path.c src/provider/registry.c src/provider/http.c src/provider/local.c src/config.c src/theme.c src/symbols.c $(INPUT_SOURCES) src/credential/store.c src/credential/vault.c src/platform/secure_file_posix.c src/platform/posix.c src/commander.c src/ui/layout.c src/path.c src/view/source.c src/view/viewer.c src/transfer/transfer.c third_party/toml.c
+
+.PHONY: network-test
+check: network-test
+check: identity-test
+.PHONY: identity-test
+identity-test: nav control-test profile-test
+	python3 tests/identity_integration_test.py ./nav
+network-test: nav verify-curl verify-libsodium verify-libsmb2 | build
+	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) tests/network_test.c $(HTTP_TEST_SOURCES) src/location.c src/transfer/download.c $(LDFLAGS) -o build/network-test $(LDLIBS)
+	python3 tests/network_integration_test.py ./build/network-test ./nav
 
 .PHONY: http-listing-test
 http-listing-test: nav verify-curl verify-libsodium verify-libsmb2 | build

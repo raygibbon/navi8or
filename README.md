@@ -1,5 +1,14 @@
 # Navi8or
 
+`nav --version` prints the application identity without opening the TUI or
+loading configuration. The root `VERSION` file is the only editable application
+version. Native/container and MinGW builds generate `build/generated/nav_version.h`
+from it, shared by CLI, menu-bar branding and HTTP user agent. Changing only
+`VERSION` updates the next build; unchanged content preserves the header timestamp.
+Source packaging includes `VERSION` and the generator, not the generated header.
+Both Linux and Windows use the same value. Run `make version-header` to generate
+the header independently, or `make TARGET=windows version-header` for cross builds.
+
 Navi8or is an independent, keyboard-first terminal resource navigator, launched
 with the `nav` command. Its dual-pane Commander works across local and remote
 resources with Far-style navigation and Brief behavior. Navi8or owns its UI,
@@ -128,7 +137,7 @@ inspection and destination smoke tests. Static security fixes require releasing
 a rebuilt executable. The result is architecture-specific and still depends on
 the target's glibc/kernel ABI, DNS configuration and runtime trust store.
 
-## Implemented local v0.1 features
+## Implemented local features
 
 - Two independently navigable local panes with selection scrolling and history.
 - TDX/TDE-derived logical key handling through a termbox-only terminal boundary.

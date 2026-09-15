@@ -48,6 +48,10 @@ void nav_ui_draw_lite_head(const NavUiMenu *menus, size_t count,
         nav_ui_text(major[index].column, 0, major[index].width,
                     menus[index].label ? menus[index].label : "", style);
     }
+    int column;
+    const char *identity = nav_ui_menu_identity(major, count, nav_term_width(),
+                                                nav_ui_show_app_identity(), &column);
+    if (identity[0]) nav_ui_text(column, 0, nav_term_width() - column, identity, NAV_STYLE_KEYBAR);
 }
 
 void nav_ui_draw_menu_bar(const NavUiMenu *menus, size_t count)

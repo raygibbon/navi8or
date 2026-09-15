@@ -12,6 +12,8 @@
 #include <process.h>
 #include <bcrypt.h>
 
+uint64_t nav_platform_milliseconds(void) { return GetTickCount64(); }
+
 wchar_t *nav_windows_wide(const char *text)
 {
     int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);

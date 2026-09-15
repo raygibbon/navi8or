@@ -45,8 +45,9 @@ int main(void)
     assert(nav_keymap_bind(&map, NAV_CONTEXT_PANEL, "Ctrl+X", "file.copy", error, sizeof error) != 0);
     assert(nav_keymap_bind(&map, NAV_CONTEXT_GLOBAL, "F12", "help.open", error, sizeof error) == 0);
     assert(nav_keymap_bind(&map, NAV_CONTEXT_PANEL, "F12", "none", error, sizeof error) == 0);
+    assert(nav_keymap_bind(&map, NAV_CONTEXT_VIEWER, "F12", "viewer.close", error, sizeof error) == 0);
     assert(press(&input, &map, NAV_CONTEXT_PANEL, "F12").command == NAV_CMD_NONE);
-    assert(press(&input, &map, NAV_CONTEXT_VIEWER, "F12").command == NAV_CMD_HELP);
+    assert(press(&input, &map, NAV_CONTEXT_VIEWER, "F12").command == NAV_CMD_VIEWER_CLOSE);
     assert(nav_keymap_label(&map, NAV_CONTEXT_PANEL, NAV_CMD_COPY, label, sizeof label) > 0);
     assert(strcmp(label, "Ctrl+F C") == 0);
     assert(nav_key_parse("Ctrl+Ctrl+Q", &key) != 0);

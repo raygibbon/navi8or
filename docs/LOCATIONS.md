@@ -1,5 +1,8 @@
 # Enter URL / Location
 
+For streamed directory metadata, listing progress/cancellation and memory
+scaling, see [Large HTTP directory listings](HTTP_LISTINGS.md).
+
 Ctrl+L (also the existing Ctrl+N O sequence) and File → Enter URL / Location...
 invoke the same `location.open` command. The profile can rebind it with
 `[keys] location = ...`. The dialog offers Open, Download and Cancel.
@@ -50,10 +53,12 @@ Download. 401/403 errors are reported without printing secrets; anonymous URLs
 that require login need an existing matching authenticated repository. No browser
 cookies or SSO integration is provided.
 
-Normal libcurl proxy environment behavior is unchanged: HTTP_PROXY/HTTPS_PROXY,
-ALL_PROXY, NO_PROXY and their libcurl-supported lowercase forms are respected.
+The default System proxy mode leaves normal libcurl environment behavior unchanged:
+HTTPS_PROXY, ALL_PROXY, NO_PROXY and libcurl-supported lowercase forms are respected.
 As usual, libcurl uses lowercase `http_proxy` for HTTP proxy selection; Navi8or
 does not override this security behavior or bypass proxies automatically.
+Preferences → Network can explicitly select No Proxy, applied to saved and direct
+URL resources alike. See [Network preferences](NETWORK.md).
 
 `resource.download` (short name `download`) is bindable for selected Panel files
 and Viewer resources, with no new default

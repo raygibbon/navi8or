@@ -215,9 +215,12 @@ class DirectoryHandler(http.server.BaseHTTPRequestHandler):
                 served += len(chunk)
             if self.path == "/root/unknown.bin":
                 self.wfile.write(b"0\r\n\r\n")
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
             pass
-        self.record(served)
+        finally:
+            # Bounded non-Range reads deliberately abort this response. TLS
+            # may report that abort as SSLEOFError instead of a socket reset.
+            self.record(served)
 
     def read_upload_body(self):
         digest = hashlib.sha256()
@@ -626,7 +629,7 @@ def run_nav_open(nav, url):
             send(fd, b"\x15")  # move the HTTP provider into the active right pane
             send(fd, b"\x1c")
             send(fd, b"\r")  # File -> Open Location
-            send(fd, b"\x7f")  # replace the remote display path '/'
+            send(fd, b"\x01")  # Select All: the current location form contains the full remote URL.
             send(fd, left.encode())
             local = send(fd, b"\r", 0.4)
             if b"Local" not in local:
@@ -855,7 +858,7 @@ def run_server(executable, tls, verify, expect_success, certificate=None,
             fallback = [request for request in DirectoryHandler.requests
                         if request["path"] == "/root/fallback-large.txt"]
             if not fallback or fallback[0]["served"] >= 8 * 1024 * 1024:
-                raise RuntimeError("non-Range Viewer fallback consumed the whole object")
+                raise RuntimeError(f"non-Range Viewer fallback consumed the whole object: {fallback!r}")
             records = DirectoryHandler.upload_records
             required = {"/upload/zero.bin", "/upload/tiny.txt",
                         "/upload/space%20%23%20%25%20%C3%BC%20%28x%29.txt",

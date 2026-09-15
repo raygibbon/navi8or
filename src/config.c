@@ -101,6 +101,7 @@ void nav_config_defaults(NavConfig *config)
     nav_keymap_defaults(&config->keymap);
     config->profile = *nav_theme_default();
     config->show_menu = config->show_status = config->show_function_bar = true;
+    config->show_app_identity = true;
     config->column_separator = -1;
     config->show_menu_keys = config->show_dialog_keys = config->show_help_keys = true;
     config->pane_show_size = config->pane_show_modified = true;
@@ -125,6 +126,9 @@ void nav_config_defaults(NavConfig *config)
 
 int nav_config_validate(const NavConfig *config, char *error, size_t error_size)
 {
+    if (config->proxy_mode != NAV_PROXY_SYSTEM && config->proxy_mode != NAV_PROXY_NONE) {
+        snprintf(error, error_size, "network.proxy_mode is invalid"); return -1;
+    }
     if (!config->editor_command[0])
     {
         snprintf(error, error_size, "editor.command must not be empty");
@@ -175,6 +179,7 @@ int nav_config_write_defaults(char *error, size_t error_size)
         "[menu]\nremember_position = true\n\n"
         "[transfer]\nbuffer_size = \"4MB\"\n\n"
         "[history]\nenabled = true\nmax_entries = 100\n\n"
+        "[network]\nproxy_mode = \"system\"\n\n"
         "[theme]\nname = \"solar-dark\"\n";
     static const char theme_text[] =
         "[theme]\nformat = 2\nname = \"Solar Dark\"\n\n"
@@ -578,7 +583,7 @@ static int read_profile_keys(toml_table_t *keys, NavKeymap *map, NavInputContext
             }
             /* Spelling out a global default must retain its inherited Viewer
                override, e.g. Ctrl+Q closes Viewer instead of quitting. */
-            if (old.context == replacement->context || !original || old.configured) remove = true;
+            if (old.context == replacement->context || !original) remove = true;
         }
         if (!remove) map->bindings[keep++] = old;
     }
@@ -612,7 +617,7 @@ static int profile_table_keys(toml_table_t *root, const char *name, const char *
 }
 static int profile_settings(toml_table_t *root, NavConfig *config, char *error, size_t size)
 {
-    static const char *const layout_keys[] = {"show_menu", "show_status", "show_function_bar", "show_column_separator", "border_style", "space", "shadow", NULL};
+    static const char *const layout_keys[] = {"show_menu", "show_status", "show_function_bar", "show_app_identity", "show_column_separator", "border_style", "space", "shadow", NULL};
     static const char *const pane_keys[] = {"show_size", "show_modified", "directories_first", "show_hidden", "case_sensitive_sort", "size_format", "date_format", "view", "sort", NULL};
     static const char *const shortcut_keys[] = {"show_function_bar", "show_menu_keys", "show_dialog_keys", "show_help_keys", NULL};
     static const char *const viewer_keys[] = {"line_numbers", "wrap", "current_line", NULL};
@@ -624,6 +629,7 @@ static int profile_settings(toml_table_t *root, NavConfig *config, char *error, 
     if (layout) {
         BOOL(layout, "show_menu", show_menu); BOOL(layout, "show_status", show_status);
         BOOL(layout, "show_function_bar", show_function_bar);
+        BOOL(layout, "show_app_identity", show_app_identity);
         if (toml_key_exists(layout, "show_column_separator")) {
             toml_datum_t auto_value = toml_string_in(layout, "show_column_separator");
             if (auto_value.ok) {
@@ -780,6 +786,20 @@ static int load_config(NavConfig *config, const char *selected, const NavConfig 
     toml_table_t *transfer = toml_table_in(root, "transfer");
     toml_table_t *history = toml_table_in(root, "history");
     toml_table_t *theme = toml_table_in(root, "theme");
+    toml_table_t *network = toml_table_in(root, "network");
+    if (toml_key_exists(root, "network") && !network) {
+        snprintf(error, error_size, "%s: network must be a table", path);
+        toml_free(root); *config = candidate; return -1;
+    }
+    if (network && toml_key_exists(network, "proxy_mode")) {
+        char mode[32];
+        if (!read_string(network, "proxy_mode", mode, sizeof mode) ||
+            (strcmp(mode, "system") && strcmp(mode, "none"))) {
+            snprintf(error, error_size, "%s: network.proxy_mode must be \"system\" or \"none\"", path);
+            toml_free(root); *config = candidate; return -1;
+        }
+        candidate.proxy_mode = !strcmp(mode, "none") ? NAV_PROXY_NONE : NAV_PROXY_SYSTEM;
+    }
     if (general)
     {
         read_bool(general, "confirm_delete", &candidate.confirm_delete);
@@ -852,10 +872,13 @@ static int load_config(NavConfig *config, const char *selected, const NavConfig 
         read_bool(app, "confirm_delete", &candidate.confirm_delete);
         read_bool(app, "show_hidden", &candidate.show_hidden);
     }
-    if (profile_settings(root, &candidate, error, error_size) || read_keymap(root, &candidate.keymap, error, error_size)) {
+    char key_error[256] = {0};
+    if (profile_settings(root, &candidate, key_error, sizeof key_error) ||
+        read_keymap(root, &candidate.keymap, key_error, sizeof key_error)) {
         toml_free(root);
         nav_keymap_defaults(&candidate.keymap);
         *config = candidate;
+        snprintf(error, error_size, "%s: %s", path, key_error);
         return -1;
     }
     toml_free(root);
@@ -871,6 +894,9 @@ static int load_config(NavConfig *config, const char *selected, const NavConfig 
 
 /* New UI profiles never redirect operational sidecars. Legacy full config files
    remain accepted by -i for compatibility, layered over normal configuration. */
+int nav_config_load_operational_file(NavConfig *config, const char *path, char *error, size_t size)
+{ return load_config(config, path, NULL, error, size); }
+
 int nav_config_load_file(NavConfig *config, const char *selected, char *error, size_t error_size)
 {
     int status = load_config(config, NULL, NULL, error, error_size);

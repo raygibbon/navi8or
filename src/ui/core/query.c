@@ -5,6 +5,51 @@
 #include <stdio.h>
 #include <string.h>
 
+void nav_ui_select_draw(int x, int y, int width, const char *label, const char *value, NavStyle style)
+{
+    char text[320]; snprintf(text, sizeof text, "%s  [ %s v ]", label, value);
+    nav_ui_text(x, y, width, text, style);
+    int arrow = (int)(strlen(label) + strlen(value) + 5);
+    if (arrow < width) nav_term_unicode_glyph(x + arrow, y, 0x25bc, style);
+}
+
+bool nav_ui_select(const char *title, const char *const *options, size_t count,
+                   int *value, NavInputContext context, NavUiRedrawFn redraw, void *data)
+{
+    if (!count || !value) return false;
+    size_t selected = *value >= 0 && (size_t)*value < count ? (size_t)*value : 0, top = 0;
+    for (;;) {
+        if (redraw) redraw(data);
+        int width = nav_term_width(), height = nav_term_height();
+        int w = width > 44 ? 40 : width - 2, h = (int)count + 4;
+        if (h > height - 2) h = height - 2;
+        if (w < 4 || h < 5) { nav_ui_text(0, 0, width, "Picker: terminal too small", NAV_STYLE_WARNING); }
+        else {
+            int x = (width - w) / 2, y = (height - h) / 2;
+            size_t visible = (size_t)(h - 4);
+            if (selected < top) top = selected;
+            if (selected >= top + visible) top = selected - visible + 1;
+            nav_ui_box(x, y, w, h, title, NAV_STYLE_DIALOG);
+            for (size_t i = 0; i < visible && top + i < count; i++)
+                nav_ui_text(x + 2, y + 1 + (int)i, w - 4, options[top + i],
+                            top + i == selected ? NAV_STYLE_SELECTION : NAV_STYLE_DIALOG);
+            NavCommand commands[] = {NAV_CMD_ACCEPT, NAV_CMD_CANCEL};
+            const char *labels[] = {"Choose", "Cancel"}; char hints[128];
+            nav_ui_hints(context, commands, labels, 2, hints, sizeof hints);
+            nav_ui_text(x + 2, y + h - 2, w - 4, hints, NAV_STYLE_TEXT_DIM);
+        }
+        nav_term_hide_cursor(); nav_term_present();
+        NavAction event;
+        if (nav_ui_input(context, &event) <= 0 || event.type != NAV_TERM_EVENT_KEY) continue;
+        if (event.command == NAV_CMD_CANCEL) return false;
+        if (event.command == NAV_CMD_ACCEPT) { *value = (int)selected; return true; }
+        if (event.command == NAV_CMD_UP && selected) selected--;
+        if (event.command == NAV_CMD_DOWN && selected + 1 < count) selected++;
+        if (event.command == NAV_CMD_HOME) selected = 0;
+        if (event.command == NAV_CMD_END) selected = count - 1;
+    }
+}
+
 static int prompt_row(void)
 {
     int height = nav_term_height();

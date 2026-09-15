@@ -1,4 +1,5 @@
 #include "nav.h"
+#include "nav_version.h"
 #include "nav_terminal.h"
 #include "nav_theme.h"
 #include "nav_profile.h"
@@ -205,7 +206,7 @@ static void draw_pane_summary(const NavPane *pane, int x, int y, int width,
             if (entry->flags & NAV_ENTRY_DIR)
                 snprintf(size, sizeof size, "<DIR>");
             else if (entry->flags & NAV_ENTRY_SIZE_KNOWN)
-                nav_format_size(entry->size, size, sizeof size);
+                nav_format_entry_size(entry, false, size, sizeof size);
             else
                 snprintf(size, sizeof size, "-");
             snprintf(line, sizeof line, " Selected: %.*s  %s",
@@ -214,19 +215,24 @@ static void draw_pane_summary(const NavPane *pane, int x, int y, int width,
     } else {
         int files = 0, directories = 0;
         uint64_t bytes = 0;
-        bool known = false;
+        bool known = false, approximate = false;
         for (size_t index = 0; index < pane->listing.count; index++) {
             const NavEntry *entry = &pane->listing.items[index];
             if (!entry_visible(pane, entry) || entry->flags & NAV_ENTRY_PARENT) continue;
             if (entry->flags & NAV_ENTRY_DIR) directories++;
             else {
                 files++;
-                if (entry->flags & NAV_ENTRY_SIZE_KNOWN) { bytes += entry->size; known = true; }
+                if (entry->flags & NAV_ENTRY_SIZE_KNOWN) {
+                    if (bytes > UINT64_MAX - entry->size) { bytes = UINT64_MAX; approximate = true; }
+                    else bytes += entry->size;
+                    known = true;
+                    if (entry->flags & NAV_ENTRY_SIZE_APPROXIMATE) approximate = true;
+                } else approximate = true;
             }
         }
         if (known) {
             nav_format_size(bytes, size, sizeof size);
-            snprintf(line, sizeof line, " %s in %d files, %d dirs", size, files, directories);
+            snprintf(line, sizeof line, " %s%s in %d files, %d dirs", approximate ? "~" : "", size, files, directories);
         } else snprintf(line, sizeof line, " %d files, %d dirs", files, directories);
     }
     if (pane->filter[0]) {
@@ -629,6 +635,7 @@ static void command_open_location(NavApp *app)
     NavProvider *provider = nav_location_resolve(app, location, &resource, &directory,
                                                 &owned, error, sizeof error);
     if (!provider) { set_error(app, error); return; }
+    nav_http_provider_configure(provider, &app->config);
     if (owned && !strcmp(provider->scheme, "http") && !directory) {
         NavEntry metadata;
         int probe = provider->stat(provider, resource.resource_id, &metadata, error, sizeof error);
@@ -1178,6 +1185,49 @@ static void command_vault(NavApp *app)
     }
 }
 
+typedef struct {
+    NavApp *app;
+    NavInput input;
+    int64_t last_paint, last_poll;
+    bool cancelled;
+} ListingScreen;
+static int64_t listing_milliseconds(void)
+{ return (int64_t)nav_platform_milliseconds(); }
+static void repository_progress(const NavListProgress *progress, void *data)
+{
+    ListingScreen *screen = data;
+    int64_t now = listing_milliseconds();
+    if (screen->last_paint && now - screen->last_paint < 100) return;
+    screen->last_paint = now;
+    char received[32], total[32], hint[96], text[256];
+    nav_format_size(progress->bytes_received, received, sizeof received);
+    nav_format_size(progress->total_bytes, total, sizeof total);
+    NavCommand cancel = NAV_CMD_CANCEL;
+    nav_ui_hints(NAV_CONTEXT_DIALOG, &cancel, NULL, 1, hint, sizeof hint);
+    snprintf(text, sizeof text, "Loading repository... %s%s%s   %zu entries%s%s",
+             received, progress->total_known ? " / " : "", progress->total_known ? total : "",
+             progress->entries, hint[0] ? "   " : "", hint);
+    set_status(screen->app, text);
+    NavCommanderLayout layout;
+    nav_commander_layout_for_config(nav_term_width(), nav_term_height(), nav_term_theme()->style,
+                                    &screen->app->config, &layout);
+    if (layout.status_row >= 0) draw_global_status(screen->app, &layout, nav_term_theme()->style);
+    nav_term_present();
+}
+static bool repository_cancel(void *data)
+{
+    ListingScreen *screen = data;
+    int64_t now = listing_milliseconds();
+    if (screen->last_poll && now - screen->last_poll < 50) return screen->cancelled;
+    screen->last_poll = now;
+    NavTermEvent event;
+    if (nav_term_poll_event(&event, 0) > 0) {
+        if (event.type == NAV_TERM_EVENT_RESIZE) present_app(screen->app);
+        if (nav_input_resolve(&screen->input, nav_ui_keymap(), NAV_CONTEXT_DIALOG, &event).command == NAV_CMD_CANCEL)
+            screen->cancelled = true;
+    }
+    return screen->cancelled;
+}
 static void command_repository_open(NavApp *app)
 {
     int index = choose_repository(app, "Open Repository");
@@ -1189,6 +1239,7 @@ static void command_repository_open(NavApp *app)
                                         app->credential_store, error,
                                         sizeof error);
     if (!provider) { set_error(app, error); return; }
+    nav_http_provider_configure(provider, &app->config);
     replacement = *pane;
     memset(&replacement.location, 0, sizeof replacement.location);
     memset(&replacement.listing, 0, sizeof replacement.listing);
@@ -1196,15 +1247,22 @@ static void command_repository_open(NavApp *app)
     replacement.history.current = -1;
     replacement.provider = provider;
     replacement.filter[0] = 0;
+    ListingScreen screen = {.app = app};
+    NavListOptions options = {.progress = repository_progress, .cancel = repository_cancel, .userdata = &screen};
     set_status(app, "Loading repository...");
     present_app(app);
-    if (nav_pane_open(&replacement, app->config.repositories[index].url,
+    if (nav_pane_open_progress(&replacement, app->config.repositories[index].url,
                       app->show_hidden, app->config.history_enabled,
-                      error, sizeof error)) {
+                      &options, error, sizeof error)) {
         nav_listing_free(&replacement.listing);
         nav_provider_destroy(provider);
-        set_error(app, error[0] ? error : "Unable to open repository");
+        if (screen.cancelled) set_notice(app, "Repository listing cancelled; previous pane retained");
+        else set_error(app, error[0] ? error : "Unable to open repository");
         return;
+    }
+    if (replacement.listing.count > 10000) {
+        char text[128]; snprintf(text, sizeof text, "Sorting %zu entries...", replacement.listing.count - 1);
+        set_status(app, text); present_app(app);
     }
     nav_pane_sort(&replacement, replacement.sort_mode);
     old_provider = pane->provider;
@@ -1262,11 +1320,13 @@ void nav_ui_profile_apply(NavApp *app)
     bool hidden_changed = !profile_ui_initialized || profile_hidden != app->config.show_hidden;
     nav_ui_input_configure(&app->config);
     nav_term_set_theme(&app->config.profile);
+    for (int i = 0; i < 2; i++) nav_http_provider_configure(app->panes[i].provider, &app->config);
     if (hidden_changed) app->show_hidden = app->config.show_hidden;
     for (int i = 0; i < 2; i++) {
         bool resort = !profile_ui_initialized || profile_sort != app->config.sort ||
                       profile_dirs_first != app->config.directories_first || profile_case_sensitive != app->config.case_sensitive_sort;
         if (!profile_ui_initialized || profile_view != app->config.panel_view) app->panes[i].view = app->config.panel_view;
+        app->panes[i].history_enabled = app->config.history_enabled;
         if (!profile_ui_initialized || profile_dirs_first != app->config.directories_first) app->panes[i].directories_first = app->config.directories_first;
         if (!profile_ui_initialized || profile_case_sensitive != app->config.case_sensitive_sort) app->panes[i].case_sensitive_sort = app->config.case_sensitive_sort;
         if (hidden_changed && profile_ui_initialized) refresh_pane(app, &app->panes[i]);
@@ -1292,7 +1352,7 @@ void nav_ui_profile_restore_panes(NavApp *app, const NavProfileSession *session)
 
 static void command_reload_config(NavApp *app)
 {
-    if (app->profile_dirty && !nav_ui_confirm("Discard unsaved profile changes and reload?", draw_app, app)) return;
+    if ((app->profile_dirty || nav_settings_dirty(app)) && !nav_ui_confirm(nav_settings_dirty(app) ? "Discard unsaved settings and reload?" : "Discard unsaved profile changes and reload?", draw_app, app)) return;
     NavConfig candidate;
     NavThemeResult theme_result;
     static NavTheme running_theme;
@@ -1305,6 +1365,7 @@ static void command_reload_config(NavApp *app)
     theme_result.theme = candidate.profile;
     app->config = candidate;
     nav_profile_mark_saved(app);
+    nav_settings_mark_saved(app);
     profile_ui_initialized = false; nav_ui_profile_apply(app);
     nav_ui_input_configure(&app->config);
     app->show_hidden = candidate.show_hidden;
@@ -1438,7 +1499,7 @@ static void dispatch(NavApp *app, NavCommand command)
     case NAV_CMD_PROFILE_SAVE: nav_ui_profile_save(app, false, draw_app, app); break;
     case NAV_CMD_PROFILE_SAVE_AS: nav_ui_profile_save(app, true, draw_app, app); break;
     case NAV_CMD_QUIT:
-        if (!app->profile_dirty || nav_ui_confirm("Discard unsaved profile changes and quit?", draw_app, app)) app->running = false;
+        if ((!app->profile_dirty && !nav_settings_dirty(app)) || nav_ui_confirm(nav_settings_dirty(app) ? "Discard unsaved settings and quit?" : "Discard unsaved profile changes and quit?", draw_app, app)) app->running = false;
         break;
     case NAV_CMD_REFRESH:
         refresh_pane(app, pane);
@@ -1473,7 +1534,7 @@ static void dispatch(NavApp *app, NavCommand command)
         break;
     case NAV_CMD_ABOUT:
     {
-        const char *lines[] = {"Navi8or 0.1", "Keyboard-first local and remote repository navigator", "TDX/TDE interaction and visual conventions"};
+        const char *lines[] = {NAV_APP_IDENTITY, "Keyboard-first local and remote repository navigator", "TDX/TDE interaction and visual conventions"};
         nav_ui_info(" About Navi8or ", lines, 3);
         break;
     }
@@ -1588,6 +1649,7 @@ static void activate(NavApp *app, NavPane *pane)
 
 int nav_ui_run(NavApp *app)
 {
+    nav_settings_mark_saved(app);
     /* Ctrl+\\ is Navi8or's TDX-derived menu key, not a process-quit request. */
     nav_ui_input_configure(&app->config);
     nav_ui_workspace(NAV_CONTEXT_PANEL);
@@ -1604,7 +1666,7 @@ int nav_ui_run(NavApp *app)
     while (app->running)
     {
         if (nav_ui_quit_requested()) {
-            if (!app->profile_dirty || nav_ui_confirm("Discard unsaved profile changes and quit?", draw_app, app)) break;
+            if ((!app->profile_dirty && !nav_settings_dirty(app)) || nav_ui_confirm(nav_settings_dirty(app) ? "Discard unsaved settings and quit?" : "Discard unsaved profile changes and quit?", draw_app, app)) break;
             nav_ui_input_configure(&app->config);
         }
         NavAction event;
@@ -1629,5 +1691,6 @@ int nav_ui_run(NavApp *app)
     }
     nav_term_shutdown();
     free(app->profile_saved); app->profile_saved = NULL;
+    free(app->settings_saved); app->settings_saved = NULL;
     return 0;
 }

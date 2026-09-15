@@ -35,7 +35,24 @@ static void metadata_cases(NavProvider *provider, const char *url)
         {" 14-Xxx-2026 99:45 123", NAV_ENTRY_SIZE_KNOWN, 123},
         {" -", 0, 0}, {" 0", NAV_ENTRY_SIZE_KNOWN, 0},
         {" 18446744073709551615", NAV_ENTRY_SIZE_KNOWN, UINT64_MAX},
-        {" 18446744073709551616", 0, 0}, {" -123", 0, 0}, {" 1.2K", 0, 0},
+        {" 18446744073709551616", 0, 0}, {" -123", 0, 0},
+        {" 123 B", NAV_ENTRY_SIZE_KNOWN, 123},
+        {" 0 B", NAV_ENTRY_SIZE_KNOWN, 0},
+        {" 18446744073709551615 B", NAV_ENTRY_SIZE_KNOWN, UINT64_MAX},
+#define APPROX (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_SIZE_APPROXIMATE)
+        {" 12K", APPROX, 12288}, {" 12KB", APPROX, 12288}, {" 12 KiB", APPROX, 12288},
+        {" 12kb", APPROX, 12288}, {" 12 kIb", APPROX, 12288},
+        {" 1.5M", APPROX, 1572864}, {" 1.5MB", APPROX, 1572864}, {" 1.5 MiB", APPROX, 1572864},
+        {" 2G", APPROX, 2147483648ULL}, {" 2GB", APPROX, 2147483648ULL}, {" 2 GiB", APPROX, 2147483648ULL},
+        {" 1T", APPROX, 1099511627776ULL}, {" 1TB", APPROX, 1099511627776ULL}, {" 1 TiB", APPROX, 1099511627776ULL},
+        {" 1.2K", APPROX, 1228}, {" 0K", APPROX, 0},
+        {" 14-Sep-2026 18:45 12 KiB", APPROX | NAV_ENTRY_MODIFIED_KNOWN, 12288},
+        {" 2026-09-14 18:45 12 KiB", APPROX | NAV_ENTRY_MODIFIED_KNOWN, 12288},
+        {" 18014398509481983K", APPROX, UINT64_MAX - 1023},
+        {" 18014398509481984K", 0, 0}, {" 18446744073709551615T", 0, 0},
+        {" 1XB", 0, 0}, {" 1KBjunk", 0, 0}, {" 1..5M", 0, 0}, {" 1.M", 0, 0},
+        {" .5M", 0, 0}, {" 1e3K", 0, 0}, {" 1.5", 0, 0}, {" 123 B extra", 0, 0},
+#undef APPROX
     };
     for (size_t index = 0; index < sizeof cases / sizeof cases[0]; index++) {
         char html[512];
@@ -47,7 +64,12 @@ static void metadata_cases(NavProvider *provider, const char *url)
                                              &listing, error, sizeof error) == 0);
             assert(listing.count == 2);
             NavEntry *entry = &listing.items[1];
-            assert((entry->flags & (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_MODIFIED_KNOWN)) == cases[index].flags);
+            assert((entry->flags & (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_MODIFIED_KNOWN | NAV_ENTRY_SIZE_APPROXIMATE)) == cases[index].flags);
+            if (entry->flags & NAV_ENTRY_SIZE_APPROXIMATE) {
+                char display[32], row[100]; nav_format_entry_size(entry, false, display, sizeof display);
+                assert(display[0] == '~'); nav_format_entry_full(entry, 90, row, sizeof row);
+                assert(strstr(row, display));
+            }
             if (entry->flags & NAV_ENTRY_SIZE_KNOWN) assert(entry->size == cases[index].size);
             if (entry->flags & NAV_ENTRY_MODIFIED_KNOWN) {
                 struct tm *tm = localtime(&entry->modified);
@@ -66,6 +88,13 @@ static void metadata_cases(NavProvider *provider, const char *url)
     }
     NavListing listing = {0};
     char error[256] = {0};
+    const char *table = "<table><tr><td><a href='apache.bin'>apache.bin</a></td>"
+        "<td>2026-09-14 18:45</td><td>1.5 MiB</td></tr></table>";
+    assert(!nav_http_test_parse_chunks(provider, url, table, strlen(table), 1, &listing, error, sizeof error));
+    assert(listing.count == 2 && listing.items[1].size == 1572864);
+    assert((listing.items[1].flags & (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_SIZE_APPROXIMATE | NAV_ENTRY_MODIFIED_KNOWN)) ==
+           (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_SIZE_APPROXIMATE | NAV_ENTRY_MODIFIED_KNOWN));
+    nav_listing_free(&listing);
     const char *html = "<a href='sub/'>sub/</a> 14-Sep-2026 18:45 -\n"
         "<a href='foo.txt'>foo</a>\n<a href='foo.txt'>duplicate</a> 14-Sep-2026 18:45 123";
     assert(nav_http_test_parse_chunks(provider, url, html, strlen(html), 1,
@@ -83,6 +112,18 @@ static void metadata_cases(NavProvider *provider, const char *url)
     assert(strstr(error, "row/tag") && !listing.items);
 }
 
+typedef struct { size_t calls, increases, entries; uint64_t bytes, total; bool known, cancel; } ListReports;
+static void report_listing(const NavListProgress *progress, void *data)
+{
+    ListReports *reports = data;
+    reports->calls++;
+    assert(progress->entries >= reports->entries && progress->bytes_received >= reports->bytes);
+    if (progress->entries > reports->entries) reports->increases++;
+    reports->entries = progress->entries; reports->bytes = progress->bytes_received;
+    reports->known = progress->total_known; reports->total = progress->total_bytes;
+}
+static bool cancel_listing(void *data)
+{ ListReports *reports = data; return reports->cancel && reports->entries >= 100; }
 int main(int argc, char **argv)
 {
     NavRepository repository = {.name = "listing", .tls_verify = false};
@@ -101,6 +142,8 @@ int main(int argc, char **argv)
                 NavEntry entry;
                 assert(provider->stat(provider, url, &entry, error, sizeof error) == 0);
                 assert(entry.size == 123 && (entry.flags & NAV_ENTRY_SIZE_KNOWN));
+                if (!!(entry.flags & NAV_ENTRY_MODIFIED_KNOWN) != (index == 0))
+                    fprintf(stderr, "stat file%d: flags=%u modified=%lld\n", index, entry.flags, (long long)entry.modified);
                 assert(!!(entry.flags & NAV_ENTRY_MODIFIED_KNOWN) == (index == 0));
                 if (!index) assert(entry.modified == (time_t)1789411500);
             }
@@ -108,26 +151,68 @@ int main(int argc, char **argv)
             return 0;
         }
         if (!strcmp(mode, "oom")) nav_http_test_listing_allocations(2);
-        int result = provider->list(provider, repository.url, false, &listing,
-                                    error, sizeof error);
-        if (!strcmp(mode, "long") || !strcmp(mode, "oom") || !strcmp(mode, "outside")) {
+        ListReports reports = {.cancel = !strcmp(mode, "cancel")};
+        NavListOptions options = {.progress = report_listing, .cancel = cancel_listing, .userdata = &reports};
+        NavPane *pane = calloc(1, sizeof *pane), *before = malloc(sizeof *before); assert(pane && before);
+        pane->provider = provider; pane->history.current = -1;
+        pane->listing.items = calloc(1, sizeof(NavEntry)); assert(pane->listing.items);
+        pane->listing.count = pane->listing.capacity = 1;
+        snprintf(pane->listing.items[0].name, NAV_NAME_MAX, "old pane");
+        *before = *pane;
+        int result = nav_pane_open_progress(pane, repository.url, false, true, &options, error, sizeof error);
+        if (result) {
+            assert(!memcmp(pane, before, sizeof *pane));
+            assert(!strcmp(pane->listing.items[0].name, "old pane"));
+        } else { listing = pane->listing; memset(&pane->listing, 0, sizeof pane->listing); }
+        nav_listing_free(&pane->listing); free(pane); free(before);
+        if (!strcmp(mode, "long") || !strcmp(mode, "oom") || !strcmp(mode, "outside") || !strcmp(mode, "cancel")) {
             assert(result == -1 && listing.count == 0);
+            printf("%s listing rejected: %s\n", mode, error); fflush(stdout);
             assert(strstr(error, !strcmp(mode, "long") ? "16 KiB" :
-                                !strcmp(mode, "oom") ? "out of memory" : "repository root"));
+                                !strcmp(mode, "oom") ? "out of memory" : !strcmp(mode, "cancel") ? "cancelled" : "repository root"));
         } else {
             if (result) fprintf(stderr, "%s\n", error);
             assert(result == 0);
-            size_t expected = !strcmp(mode, "large") ? 30001 :
+            size_t expected = !strcmp(mode, "large") ? 30001 : !strcmp(mode, "known") ? 3001 :
                               !strcmp(mode, "empty") ? 1 : 3;
             assert(listing.count == expected);
             assert(!strcmp(listing.items[0].name, ".."));
             if (expected > 1)
-                assert(!strcmp(listing.items[1].name, !strcmp(mode, "large") ? "file00000.txt" : "foo.txt"));
-            if (!strcmp(mode, "large")) {
+                assert(!strcmp(listing.items[1].name, (!strcmp(mode, "large") || !strcmp(mode, "known")) ? "file00000.txt" : "foo.txt"));
+            if (!strcmp(mode, "large") || !strcmp(mode, "known")) {
+                const uint64_t sizes[] = {123, 14336, 2621440, 8589934592ULL, 0, 0, UINT64_MAX};
                 for (size_t index = 1; index < listing.count; index++) {
-                    assert(listing.items[index].size == UINT64_MAX);
-                    assert((listing.items[index].flags & (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_MODIFIED_KNOWN)) ==
-                           (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_MODIFIED_KNOWN));
+                    size_t variant = (index - 1) % 7;
+                    assert(listing.items[index].size == sizes[variant]);
+                    assert(!!(listing.items[index].flags & NAV_ENTRY_SIZE_KNOWN) == (variant != 4));
+                    assert(!!(listing.items[index].flags & NAV_ENTRY_SIZE_APPROXIMATE) == (variant >= 1 && variant <= 3));
+                    assert(listing.items[index].flags & NAV_ENTRY_MODIFIED_KNOWN);
+                }
+                assert(reports.calls > 10 && reports.increases > 10 && reports.entries == expected - 1);
+                assert(reports.known == !strcmp(mode, "known"));
+                if (reports.known) assert(reports.bytes == reports.total && reports.total > 1024 * 1024);
+                else assert(reports.bytes > 50 * 1024 * 1024);
+                printf("%s listing: %llu bytes, %zu unique entries, %zu progress calls\n", mode,
+                       (unsigned long long)reports.bytes, reports.entries, reports.calls);
+                if (!strcmp(mode, "large")) {
+                    /* Reverse the fixture to exercise the former quadratic
+                     * worst case, then sort by mixed exact/rounded sizes. */
+                    for (size_t i = 1, j = listing.count - 1; i < j; i++, j--) {
+                        NavEntry entry = listing.items[i]; listing.items[i] = listing.items[j]; listing.items[j] = entry;
+                    }
+                    NavPane *sorted = calloc(1, sizeof *sorted); assert(sorted);
+                    sorted->listing = listing; sorted->selected = 100; sorted->directories_first = true;
+                    char selected[NAV_PATH_MAX]; snprintf(selected, sizeof selected, "%s", nav_pane_selected(sorted)->resource_id);
+                    clock_t start = clock(); nav_pane_sort(sorted, NAV_SORT_NAME);
+                    double name_seconds = (double)(clock() - start) / CLOCKS_PER_SEC;
+                    assert(!strcmp(nav_pane_selected(sorted)->resource_id, selected));
+                    assert(sorted->listing.items[0].flags & NAV_ENTRY_PARENT);
+                    for (size_t i = 2; i < listing.count; i++) assert(strcmp(listing.items[i - 1].name, listing.items[i].name) < 0);
+                    start = clock(); nav_pane_sort(sorted, NAV_SORT_SIZE);
+                    double size_seconds = (double)(clock() - start) / CLOCKS_PER_SEC;
+                    for (size_t i = 2; i < listing.count; i++) assert(listing.items[i - 1].size <= listing.items[i].size);
+                    printf("30k sort: reverse name %.3fs, mixed size %.3fs\n", name_seconds, size_seconds);
+                    free(sorted);
                 }
             }
             if (!strcmp(mode, "redirect")) {
@@ -141,6 +226,7 @@ int main(int argc, char **argv)
         return 0;
     }
     metadata_cases(provider, repository.url);
+    printf("NavEntry: %zu bytes; resource_id: %zu bytes\n", sizeof(NavEntry), sizeof(((NavEntry *)0)->resource_id));
     const char *html = "<html><A class='x>y' hrEF = \"foo.txt\">foo</A>"
         "<a href='sub/'>sub</a><a href=foo.txt>duplicate</a>"
         "<a href='./foo.txt'>resolved duplicate</a><a href='../'>parent</a>"

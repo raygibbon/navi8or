@@ -37,7 +37,9 @@ enum
     NAV_ENTRY_DIR = 1u,
     NAV_ENTRY_PARENT = 2u,
     NAV_ENTRY_SIZE_KNOWN = 4u,
-    NAV_ENTRY_MODIFIED_KNOWN = 8u
+    NAV_ENTRY_MODIFIED_KNOWN = 8u,
+    /* Listing-supplied rounded size; SIZE_KNOWN still permits display/sort. */
+    NAV_ENTRY_SIZE_APPROXIMATE = 16u
 };
 typedef enum
 {
@@ -72,12 +74,14 @@ typedef struct
     int modified_column, modified_width;
     bool show_size, show_modified;
 } NavPanelFullLayout;
+typedef enum { NAV_PROXY_SYSTEM, NAV_PROXY_NONE } NavProxyMode;
 typedef struct
 {
     NavKeymap keymap;
     NavTheme profile;
     char profile_path[NAV_PATH_MAX];
     bool show_menu, show_status, show_function_bar;
+    bool show_app_identity;
     bool show_menu_keys, show_dialog_keys, show_help_keys;
     int column_separator; /* -1 follows the chrome style. */
     bool pane_show_size, pane_show_modified, size_bytes;
@@ -98,6 +102,7 @@ typedef struct
     char editor_args[NAV_EDITOR_ARG_MAX][NAV_EDITOR_ARG_MAX_LENGTH];
     size_t editor_arg_count;
     bool editor_wait;
+    NavProxyMode proxy_mode;
     bool menu_remember_position;
     size_t transfer_buffer_size;
     bool history_enabled;
@@ -121,6 +126,17 @@ typedef enum
 } NavMode;
 typedef bool (*NavCancelFn)(void *);
 typedef void (*NavProgressFn)(uint64_t done, uint64_t total, bool total_known, void *userdata);
+typedef struct {
+    uint64_t bytes_received, total_bytes;
+    bool total_known;
+    size_t entries; /* unique children, excluding the synthetic parent */
+} NavListProgress;
+typedef void (*NavListProgressFn)(const NavListProgress *, void *);
+typedef struct {
+    NavListProgressFn progress;
+    NavCancelFn cancel;
+    void *userdata;
+} NavListOptions;
 
 typedef struct
 {
@@ -154,6 +170,9 @@ struct NavProvider
     int (*location_child)(NavProvider *, const NavLocation *, const char *, NavLocation *, char *, size_t);
     int (*location_parent)(NavProvider *, const NavLocation *, NavLocation *, char *, size_t);
     int (*list)(NavProvider *, const char *, bool, NavListing *, char *, size_t);
+    /* Optional synchronous listing feedback; providers never render the UI. */
+    int (*list_progress)(NavProvider *, const char *, bool, NavListing *,
+                         const NavListOptions *, char *, size_t);
     int (*rename_path)(NavProvider *, const char *, const char *, char *, size_t);
     int (*remove)(NavProvider *, const char *, char *, size_t);
     int (*mkdir)(NavProvider *, const char *, char *, size_t);
@@ -226,6 +245,7 @@ typedef struct
     bool show_hidden, running;
     bool profile_dirty;
     NavConfig *profile_saved;
+    NavConfig *settings_saved;
     NavConfig config;
     char status[256];
     NavMessageKind status_kind;
@@ -237,6 +257,11 @@ int nav_config_load(NavConfig *, char *, size_t);
 int nav_config_validate(const NavConfig *, char *, size_t);
 int nav_config_write_defaults(char *, size_t);
 int nav_config_save_repositories(const NavConfig *, char *, size_t);
+int nav_config_save_settings(const NavConfig *, char *, size_t);
+/* Operational document validation without treating it as a UI profile. */
+int nav_config_load_operational_file(NavConfig *, const char *, char *, size_t);
+/* Config must outlive the provider; subsequent requests read the live policy. */
+void nav_http_provider_configure(NavProvider *, const NavConfig *);
 int nav_repository_normalize_url(const char *, char *, size_t, char *, size_t);
 typedef struct
 {
@@ -276,6 +301,8 @@ const NavLocation *nav_history_back(NavHistory *);
 const NavLocation *nav_history_forward(NavHistory *);
 int nav_pane_load(NavPane *, const NavLocation *, bool, bool, char *, size_t);
 int nav_pane_open(NavPane *, const char *, bool, bool, char *, size_t);
+int nav_pane_open_progress(NavPane *, const char *, bool, bool,
+                           const NavListOptions *, char *, size_t);
 int nav_pane_refresh(NavPane *, bool, char *, size_t);
 bool nav_provider_supports(const NavProvider *, unsigned);
 bool nav_provider_resources_equal(const NavProvider *, const char *, const NavProvider *, const char *);
@@ -308,6 +335,7 @@ NavShellLayout nav_shell_layout(int, int);
 size_t nav_function_key_layout(int, const NavKeymap *, NavInputContext, NavFunctionKeySegment *, size_t);
 void nav_provider_display_name(const NavProvider *, char *, size_t);
 bool nav_entry_has_known_size(const NavEntry *);
+void nav_format_entry_size(const NavEntry *, bool, char *, size_t);
 void nav_pane_sort(NavPane *, NavSortMode);
 int nav_transfer_copy(NavProvider *, const char *, NavProvider *, const char *,
                       bool overwrite, NavProgressFn, void *, char *, size_t);

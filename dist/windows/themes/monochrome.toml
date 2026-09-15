@@ -143,6 +143,7 @@ download = "v"
 # UI presets; ordinary navigation can change panel/viewer state temporarily.
 [layout]
 show_menu = true
+show_app_identity = true
 show_status = true
 show_function_bar = true
 show_column_separator = "auto"

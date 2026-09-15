@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <time.h>
 #include <sys/types.h>
+uint64_t nav_platform_milliseconds(void); /* monotonic, for UI throttling */
 #ifdef _WIN32
 FILE *nav_platform_fopen(const char *, const char *);
 int nav_platform_mkdir(const char *, unsigned);

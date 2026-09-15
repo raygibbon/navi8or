@@ -34,16 +34,70 @@ int main(void)
 #endif
     NavApp *app = calloc(1, sizeof *app); NavConfig *loaded = malloc(sizeof *loaded); assert(app && loaded);
     assert(!nav_config_load(&app->config, error, sizeof error));
+    FILE *operational = fopen(app->config.config_path, "a"); assert(operational);
+    fputs("\n[ui]\nstyle = \"modern\" # legacy UI in operational config\n[future]\nvalue = [1, 2] # retain operational extension\n", operational); assert(!fclose(operational));
+    nav_settings_mark_saved(app);
+    assert(!nav_settings_dirty(app));
+    NavProfileSession network_session = {0};
+    assert(!nav_profile_begin(app, &network_session));
+    app->config.proxy_mode = NAV_PROXY_NONE;
+    assert(nav_settings_dirty(app));
+    assert(nav_profile_same_ui(&app->config, network_session.before));
+    nav_profile_cancel(app, &network_session);
+    assert(app->config.proxy_mode == NAV_PROXY_SYSTEM && !nav_settings_dirty(app));
+    app->config.proxy_mode = NAV_PROXY_NONE; /* Apply only */
+    app->config.confirm_overwrite = false; app->config.editor_wait = false;
+    snprintf(app->config.editor_command, sizeof app->config.editor_command, "example-editor");
+    assert(nav_settings_dirty(app));
+    assert(!nav_config_save_settings(&app->config, error, sizeof error));
+    nav_settings_mark_saved(app);
+    assert(!nav_config_load(loaded, error, sizeof error));
+    assert(loaded->proxy_mode == NAV_PROXY_NONE && !nav_settings_dirty(app));
+    assert(!loaded->confirm_overwrite && !loaded->editor_wait && !strcmp(loaded->editor_command, "example-editor"));
+    char *operational_text = read_text(app->config.config_path);
+    assert(strstr(operational_text, "value = [1, 2] # retain operational extension")); free(operational_text);
+    app->config.proxy_mode = NAV_PROXY_SYSTEM;
+    assert(!nav_config_save_settings(&app->config, error, sizeof error));
+    nav_settings_mark_saved(app);
     const char *templates[] = {"classic-dos", "solar-dark", "solar-light", "monochrome"};
     for (size_t t = 0; t < 4; t++) {
         char template_path[128]; snprintf(template_path, sizeof template_path, "themes/%s.toml", templates[t]);
         char *example = read_text(template_path);
+        assert(!strstr(example, "[network]"));
+        assert(strstr(example, "show_app_identity = true"));
         assert(strstr(example, "[shortcuts]") && strstr(example, "[keys]"));
-        assert(strstr(example, "location =") && strstr(example, "preferences ="));
+        assert(strstr(example, "location =") &&
+               (strstr(example, "preferences =") || strstr(example, "\"profile.preferences\" =")));
         free(example);
-        assert(!nav_config_load_file(loaded, template_path, error, sizeof error));
+        if (nav_config_load_file(loaded, template_path, error, sizeof error)) {
+            fprintf(stderr, "%s: %s\n", template_path, error); abort();
+        }
         assert(loaded->show_menu_keys && loaded->show_help_keys && loaded->show_dialog_keys && loaded->show_function_bar);
+        assert(loaded->show_app_identity);
         assert(resolve(&loaded->keymap, NAV_CONTEXT_PANEL, "Ctrl+L") == NAV_CMD_OPEN_LOCATION);
+        if (t == 0) {
+            /* Classic DOS is the complete discoverable reference: every
+             * compiled fallback binding must be materialized by the file. */
+            NavKeymap defaults; nav_keymap_defaults(&defaults);
+            for (size_t d = 0; d < defaults.count; d++) {
+                const NavBinding *expected = &defaults.bindings[d]; bool explicit = false;
+                for (size_t b = 0; b < loaded->keymap.count; b++) {
+                    const NavBinding *actual = &loaded->keymap.bindings[b];
+                    if (actual->configured && actual->context == expected->context &&
+                        actual->command == expected->command && actual->length == expected->length &&
+                        actual->keys[0].key == expected->keys[0].key &&
+                        actual->keys[0].modifiers == expected->keys[0].modifiers &&
+                        (actual->length == 1 || (actual->keys[1].key == expected->keys[1].key &&
+                         actual->keys[1].modifiers == expected->keys[1].modifiers))) explicit = true;
+                }
+                if (!explicit) {
+                    char sequence[96]; nav_binding_format(expected, sequence, sizeof sequence);
+                    fprintf(stderr, "Classic DOS does not explicitly contain %s %s = %s\n",
+                            nav_context_name(expected->context), nav_command_name(expected->command), sequence);
+                    abort();
+                }
+            }
+        }
         for (size_t b = 0; b < app->config.keymap.count; b++) {
             const NavBinding *binding = &app->config.keymap.bindings[b];
             char sequence[96]; assert(nav_binding_format(binding, sequence, sizeof sequence));
@@ -97,18 +151,25 @@ int main(void)
 #else
     assert(strstr(path, "/nav/profiles/Ray DOS.toml"));
 #endif
+    write_text(path, "[profile]\nname=\"Conflict\"\n[keys.panel.commands]\n\"file.copy\"=\"Ctrl+C\"\n\"file.move\"=\"Ctrl+C\"\n");
+    assert(nav_config_load_file(loaded, path, error, sizeof error));
+    assert(strstr(error, path) && strstr(error, "Ctrl+C") &&
+           strstr(error, "Copy") && strstr(error, "Move"));
     write_text(path, "# Keep this close to Far Manager\n[profile]\nname=\"Ray DOS\" # identity\n[colors]\nfile=\"yellow\" # keep this comment\n[some_future_section]\nfoo = \"bar\"\narr = [\n  \"one\",\n  \"two\"\n]\n[keys]\ncopy=\"F5\" # binding comment\n[keys.panel]\n\"F6\"=\"file.move\" # old move\n");
     snprintf(app->config.profile.display_name, sizeof app->config.profile.display_name, "Ray DOS");
     app->config.show_menu_keys = app->config.show_dialog_keys = app->config.show_help_keys = false;
     app->config.show_function_bar = false; app->config.profile.background[NAV_STYLE_FILE] = 4;
+    app->config.show_app_identity = false;
     assert(!nav_profile_save(&app->config, path, error, sizeof error));
     char *saved = read_text(path);
+    assert(!strstr(saved, "proxy_mode") && !strstr(saved, "[network]"));
     assert(strstr(saved, "Keep this close") && strstr(saved, "# identity") && strstr(saved, "# keep this comment") && strstr(saved, "binding comment"));
     assert(strstr(saved, "[some_future_section]\nfoo = \"bar\"\narr = [\n  \"one\",\n  \"two\"\n]"));
     free(saved);
     if (nav_config_load_file(loaded, path, error, sizeof error)) { fprintf(stderr, "%s\n", error); abort(); }
     assert(nav_profile_same_ui(&app->config, loaded));
     assert(!loaded->show_menu_keys && !loaded->show_dialog_keys && !loaded->show_help_keys && !loaded->show_function_bar);
+    assert(!loaded->show_app_identity);
     assert(resolve(&loaded->keymap, NAV_CONTEXT_PANEL, "Ctrl+C") == NAV_CMD_COPY);
     assert(resolve(&loaded->keymap, NAV_CONTEXT_VIEWER, "F10") == NAV_CMD_VIEWER_CLOSE);
     assert(!nav_profile_begin(app, &session)); app->config.show_menu = false; nav_profile_commit(&session); assert(!app->config.show_menu);
@@ -116,7 +177,11 @@ int main(void)
     assert(!nav_profile_save(loaded, path, error, sizeof error));
     char *first = read_text(path); assert(!nav_profile_save(loaded, path, error, sizeof error)); char *second = read_text(path); assert(!strcmp(first, second)); free(first); free(second);
     write_text(path, "[profile]\n[shortcuts]\nshow_menu_keys=123\n"); assert(nav_config_load_file(loaded, path, error, sizeof error));
+    write_text(path, "[profile]\n[network]\nproxy_mode=\"none\"\n");
+    assert(nav_config_load_file(loaded, path, error, sizeof error)); assert(strstr(error, "network"));
+    write_text(path, "[profile]\n[layout]\nshow_app_identity=123\n");
+    assert(nav_config_load_file(loaded, path, error, sizeof error)); assert(strstr(error, "show_app_identity"));
     write_text(path, "[profile]\nname=\"\"\"\nmultiline name\n\"\"\"\n"); char *unsafe_before = read_text(path);
     assert(nav_profile_save(&app->config, path, error, sizeof error)); char *unsafe_after = read_text(path); assert(!strcmp(unsafe_before, unsafe_after)); free(unsafe_before); free(unsafe_after);
-    free(app->profile_saved); free(app); free(loaded); puts("Profile editing, capture, conflict resolution, persistence and TOML preservation: passed"); return 0;
+    free(app->settings_saved); free(app->profile_saved); free(app); free(loaded); puts("Profile editing, capture, conflict resolution, persistence and TOML preservation: passed"); return 0;
 }

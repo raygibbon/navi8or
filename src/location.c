@@ -108,6 +108,7 @@ NavProvider *nav_location_resolve(NavApp *app, const char *input,
     }
     provider = nav_http_provider_create(&repository, app->credential_store, error, size);
     if (!provider) return NULL;
+    nav_http_provider_configure(provider, &app->config);
     *owned = true;
     snprintf(entry->resource_id, sizeof entry->resource_id, "%s", url);
     char path[NAV_URL_MAX]; snprintf(path, sizeof path, "%s", url);

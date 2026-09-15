@@ -27,8 +27,10 @@ void nav_show_properties(const NavEntry *entry, const char *type)
     } else snprintf(timebuf, sizeof timebuf, "Unknown");
     snprintf(name, sizeof name, "Name:      %s", entry->name);
     snprintf(path, sizeof path, "Path:      %s", entry->resource_id);
-    if (entry->flags & NAV_ENTRY_SIZE_KNOWN)
-        snprintf(size, sizeof size, "Size:      %llu bytes", (unsigned long long)entry->size);
+    if (entry->flags & NAV_ENTRY_SIZE_KNOWN) {
+        char bytes[32]; nav_format_entry_size(entry, true, bytes, sizeof bytes);
+        snprintf(size, sizeof size, "Size:      %s bytes", bytes);
+    }
     else snprintf(size, sizeof size, "Size:      Unknown");
     snprintf(modified, sizeof modified, "Modified:  %s", timebuf);
     {

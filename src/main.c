@@ -1,4 +1,5 @@
 #include "nav.h"
+#include "nav_version.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -15,8 +16,9 @@ int main(int argc, char **argv)
     while (argument < argc && argv[argument][0] == '-') {
         const char *option = argv[argument++];
         if (!strcmp(option, "--")) break;
+        if (!strcmp(option, "--version")) { puts(NAV_APP_IDENTITY); return 0; }
         if (!strcmp(option, "--help")) {
-            puts("Usage: nav [-i profile-file] [left-directory] [right-directory]\nNavi8or - keyboard-first local and remote repository navigator.");
+            puts("Usage: nav [-i profile-file] [left-directory] [right-directory]\n       nav --version\n" NAV_APP_NAME " - keyboard-first local and remote repository navigator.");
             return 0;
         }
         if (option[1] == 'i') {

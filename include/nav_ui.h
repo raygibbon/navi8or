@@ -20,6 +20,7 @@ void nav_ui_binding_help(NavInputContext);
 void nav_ui_input_configure(const NavConfig *);
 const NavKeymap *nav_ui_keymap(void);
 bool nav_ui_show_menu_keys(void);
+bool nav_ui_show_app_identity(void);
 bool nav_ui_show_dialog_keys(void);
 bool nav_ui_show_help_keys(void);
 int nav_ui_hint_key(NavInputContext, NavCommand, bool, char *, size_t);

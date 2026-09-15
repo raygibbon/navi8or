@@ -5,6 +5,26 @@
  */
 #include "nav_ui_core.h"
 #include <string.h>
+#include "nav_version.h"
+
+const char *nav_ui_menu_identity(const NavUiMajor *major, size_t count,
+                                 int columns, bool visible, int *column)
+{
+    int end = 0;
+    *column = 0;
+    if (!visible || !major || columns <= 0) return "";
+    for (size_t i = 0; i < count; i++) {
+        int edge = major[i].column + major[i].width;
+        if (edge > end) end = edge;
+    }
+    /* Reserve the selected heading's extra cell and a separating blank. */
+    const char *choices[] = {NAV_APP_IDENTITY, NAV_APP_NAME};
+    for (size_t i = 0; i < sizeof choices / sizeof *choices; i++) {
+        int start = columns - (int)strlen(choices[i]);
+        if (start >= end + 2) { *column = start; return choices[i]; }
+    }
+    return "";
+}
 
 void nav_ui_get_bar_spacing_for_style(const NavUiMenu *menus, size_t count,
                                       int columns, NavUiStyle style,

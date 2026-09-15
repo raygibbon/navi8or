@@ -46,15 +46,15 @@ def main():
         session = Session(executable, left, right, environment)
         try:
             before = session.screen.cells[5][3][1]
-            session.preferences(); session.row(2); session.send(ENTER) # Colors
+            session.preferences(); session.row(4); session.send(ENTER); session.row(2); session.send(ENTER) # Appearance / Colors
             session.send(END); session.send(UP); session.send(UP); session.send(UP) # File foreground
             assert "file foreground" in session.text(), session.text()
             session.send(ENTER)
             assert "Preferences *" in session.text(), session.text()
             assert session.screen.cells[5][3][1] != before, "file color did not preview"
-            session.send(ESC); session.send(ESC)
+            session.send(ESC); session.send(ESC); session.send(ESC); session.send(b"y")
             assert session.screen.cells[5][3][1] == before, "Cancel did not restore color"
-            session.preferences(); session.row(6); session.send(ENTER) # Keys
+            session.preferences(); session.row(5); session.send(ENTER) # Keys
             session.row(5); session.send(ENTER)
             assert "Press new key for Copy" in session.text(), session.text()
             session.send(b"\x03") # physical Ctrl+C
@@ -93,7 +93,7 @@ def main():
         # Conflict No preserves the map; Yes displaces the previous binding.
         session = Session(executable, left, right, environment)
         try:
-            session.preferences(); session.row(6); session.send(ENTER); session.row(5); session.send(ENTER)
+            session.preferences(); session.row(5); session.send(ENTER); session.row(5); session.send(ENTER)
             session.send(b"\x1b[17~") # F6 is Move
             assert "assigned to Move" in session.text(), session.text()
             session.send(b"n")
@@ -112,7 +112,7 @@ def main():
             session.send(CTRL_T); session.send(b"r"); session.send(b"y", .3)
             assert "F5 Copy" in session.text(), session.text()
             # Hiding hints does not disable any of the physical bindings.
-            session.preferences(); session.row(7); session.send(ENTER)
+            session.preferences(); session.row(4); session.send(ENTER); session.row(4); session.send(ENTER)
             for i in range(4):
                 session.send(ENTER)
                 if i != 3: session.send(DOWN)

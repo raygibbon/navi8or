@@ -134,6 +134,7 @@ download = "↓"
 # UI presets; ordinary navigation can change panel/viewer state temporarily.
 [layout]
 show_menu = true
+show_app_identity = true
 show_status = true
 show_function_bar = true
 show_column_separator = "auto"
@@ -165,23 +166,82 @@ show_dialog_keys = true
 show_help_keys = true
 
 [keys]
-help = ["F1", "Ctrl+H"]
 view = ["F3", "Ctrl+V V"]
 edit = "F4"
 copy = ["F5", "Ctrl+F C"]
 move = ["F6", "Ctrl+F M"]
 mkdir = ["F7", "Ctrl+F K"]
 delete = ["F8", "Ctrl+F D"]
-quit = ["Ctrl+Q", "F10"]
 pane_switch = ["Tab", "Ctrl+P S"]
 parent = ["Backspace", "Ctrl+PgUp", "Alt+Up", "Ctrl+N P"]
 refresh = ["Ctrl+N R", "Ctrl+R R"]
 location = ["Ctrl+L", "Ctrl+N O"]
-menu = ["Ctrl+\\", "F2"]
-preferences = "Ctrl+T P"
 # Download is menu/button driven by default; optional Viewer shortcut:
 # [keys.viewer.commands]
 # download = "Alt+D"
+
+[keys.global.commands]
+"help.open" = ["F1", "Ctrl+H"]
+"app.quit" = ["Ctrl+Q", "F10"]
+"menu.open" = ["Ctrl+\\", "F2"]
+"profile.preferences" = "Ctrl+T P"
+
+# Panel-only navigation and command families. The root [keys] entries above
+# use their normal default contexts; this section makes the remaining panel
+# controls explicit.
+[keys.panel.commands]
+"file.open" = ["Enter", "Ctrl+PgDn", "Ctrl+F O"]
+"file.rename" = "Ctrl+F R"
+"panel.swap" = ["Ctrl+U", "Ctrl+P W"]
+"navigation.back" = ["Alt+Left", "Ctrl+N B"]
+"navigation.forward" = ["Alt+Right", "Ctrl+N F"]
+"cursor.up" = "Up"
+"cursor.down" = "Down"
+"cursor.left" = "Left"
+"cursor.right" = "Right"
+"cursor.home" = "Home"
+"cursor.end" = "End"
+"cursor.page_up" = "PageUp"
+"cursor.page_down" = "PageDown"
+"panel.filter" = ["/", "Ctrl+S F"]
+"remote.connect" = "Ctrl+R O"
+"vault.open" = "Ctrl+R V"
+"panel.brief" = "Ctrl+P B"
+"panel.full" = "Ctrl+P F"
+"config.open" = "Ctrl+T C"
+"config.reload" = "Ctrl+T R"
+"theme.info" = "Ctrl+T T"
+
+[keys.viewer.commands]
+"viewer.close" = ["Escape", "Ctrl+Q", "F10"]
+"search.find" = ["Ctrl+S", "/"]
+"search.next" = "F5"
+"search.previous" = "F6"
+"viewer.goto" = "G"
+"viewer.wrap" = "W"
+"viewer.lines" = "L"
+"cursor.up" = "Up"
+"cursor.down" = "Down"
+"cursor.left" = "Left"
+"cursor.right" = "Right"
+"cursor.home" = ["Home", "Ctrl+Home"]
+"cursor.end" = ["End", "Ctrl+End"]
+"cursor.page_up" = "PageUp"
+"cursor.page_down" = "PageDown"
+"cursor.left_fast" = "Ctrl+Left"
+"cursor.right_fast" = "Ctrl+Right"
+
+[keys.menu.commands]
+"cursor.up" = "Up"
+"cursor.down" = "Down"
+"cursor.left" = ["Left", "Ctrl+Left"]
+"cursor.right" = ["Right", "Ctrl+Right"]
+"cursor.home" = "Home"
+"cursor.end" = "End"
+"cursor.page_up" = "PageUp"
+"cursor.page_down" = "PageDown"
+"dialog.accept" = "Enter"
+"dialog.cancel" = ["Escape", "Ctrl+Q"]
 
 [colors.file]
 foreground = "light_gray"
@@ -193,7 +253,83 @@ background = "blue"
 
 # Text-entry shortcuts are contextual; panel controls remain unchanged.
 [keys.dialog.commands]
+"cursor.up" = "Up"
+"cursor.down" = ["Down", "Tab"]
+"cursor.left" = "Left"
+"cursor.right" = "Right"
+"cursor.home" = "Home"
+"cursor.end" = "End"
+"cursor.page_up" = "PageUp"
+"cursor.page_down" = "PageDown"
+"dialog.accept" = "Enter"
+"dialog.cancel" = ["Escape", "Ctrl+Q"]
+"text.backspace" = "Backspace"
+"text.delete" = "Delete"
 "text.paste" = ["Ctrl+V", "Shift+Insert"]
 "text.copy" = "Ctrl+C"
 "text.cut" = "Ctrl+X"
 "text.select_all" = "Ctrl+A"
+
+[keys.confirm.commands]
+"dialog.accept" = ["Y", "Enter"]
+"dialog.cancel" = ["N", "Escape", "Ctrl+Q"]
+
+[keys.info.commands]
+"cursor.up" = "Up"
+"cursor.down" = "Down"
+"cursor.left" = "Left"
+"cursor.right" = "Right"
+"cursor.home" = "Home"
+"cursor.end" = "End"
+"cursor.page_up" = "PageUp"
+"cursor.page_down" = "PageDown"
+"dialog.accept" = "Enter"
+"dialog.cancel" = ["Escape", "Ctrl+Q"]
+
+[keys.picker.commands]
+"cursor.up" = "Up"
+"cursor.down" = "Down"
+"cursor.left" = "Left"
+"cursor.right" = "Right"
+"cursor.home" = "Home"
+"cursor.end" = "End"
+"cursor.page_up" = "PageUp"
+"cursor.page_down" = "PageDown"
+"dialog.accept" = "Enter"
+"dialog.cancel" = ["Escape", "Ctrl+Q", "F10"]
+
+[keys.vault.commands]
+"cursor.up" = "Up"
+"cursor.down" = "Down"
+"cursor.left" = "Left"
+"cursor.right" = "Right"
+"cursor.home" = "Home"
+"cursor.end" = "End"
+"cursor.page_up" = "PageUp"
+"cursor.page_down" = "PageDown"
+"dialog.accept" = "Enter"
+"dialog.cancel" = ["Escape", "Ctrl+Q", "F10"]
+"vault.new" = "F7"
+"vault.edit" = "F4"
+"vault.delete" = "F8"
+"vault.unlock" = "U"
+"vault.lock" = "L"
+
+[keys.preferences.commands]
+"cursor.up" = "Up"
+"cursor.down" = "Down"
+"cursor.left" = "Left"
+"cursor.right" = "Right"
+"cursor.home" = "Home"
+"cursor.end" = "End"
+"cursor.page_up" = "PageUp"
+"cursor.page_down" = "PageDown"
+"dialog.accept" = "Enter"
+"dialog.cancel" = ["Escape", "Ctrl+Q", "F10"]
+"text.delete" = "Delete"
+"profile.save" = "F2"
+"profile.save_as" = "F3"
+"profile.apply" = "F4"
+"profile.key_append" = "F5"
+"profile.key_sequence" = "F6"
+"help.open" = "F1"

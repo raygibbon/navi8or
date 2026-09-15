@@ -11,7 +11,7 @@ OBJDUMP := $(CROSS_COMPILE)objdump
 WINDOWS_DEPS_PREFIX ?= $(CURDIR)/.deps/windows
 # libsmb2's public headers require _WINDOWS for the Windows socket ABI.
 CPPFLAGS += -D_WINDOWS -D_WIN32_WINNT=0x0601 -DCURL_STATICLIB -DSODIUM_STATIC \
-    -Ibuild/windows -Iinclude -Ithird_party -isystem $(WINDOWS_DEPS_PREFIX)/include
+    -Ibuild/windows -Ibuild/generated -Iinclude -Ithird_party -isystem $(WINDOWS_DEPS_PREFIX)/include
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror -MMD -MP
 LDLIBS += $(WINDOWS_DEPS_PREFIX)/lib/libcurl.a $(WINDOWS_DEPS_PREFIX)/lib/libsodium.a \
@@ -41,6 +41,7 @@ build/windows/termbox2/termbox2.h: third_party/termbox2/termbox2.h third_party/t
 		patch -s -o "$@.tmp" $< < third_party/termbox2-patches/0001-windows-console-support.patch; \
 		mv "$@.tmp" "$@"
 $(OBJECTS): | verify-windows-deps
+$(OBJECTS): | $(VERSION_HEADER)
 build/windows/terminal/termbox_backend.o build/windows/terminal/termbox_input.o: build/windows/termbox2/termbox2.h
 build/windows/%.o: src/%.c
 	@mkdir -p $(dir $@)
@@ -74,6 +75,7 @@ windows-inspect: dist/windows/nav.exe
 	$(OBJDUMP) -p $< | sed -n '/DLL Name:/p'
 dist: dist/windows/nav.exe
 	cp docs/WINDOWS_BUILD.md dist/windows/README.md
-	cp -R themes dist/windows/themes
+	mkdir -p dist/windows/themes
+	cp -R themes/. dist/windows/themes/
 clean:
 	rm -rf build/windows dist/windows

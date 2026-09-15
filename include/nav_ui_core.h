@@ -74,6 +74,8 @@ void nav_ui_get_bar_spacing_for_style(const NavUiMenu *, size_t, int,
                                       NavUiStyle, NavUiMajor *);
 void nav_ui_draw_lite_head(const NavUiMenu *, size_t, const NavUiMajor *, size_t);
 void nav_ui_draw_menu_bar(const NavUiMenu *, size_t);
+/* Returns full identity, name only, or empty; column is meaningful if visible. */
+const char *nav_ui_menu_identity(const NavUiMajor *, size_t, int, bool, int *);
 
 enum
 {
@@ -125,6 +127,10 @@ NavUiFieldResult nav_ui_field_event(NavUiField *, const NavAction *);
 int nav_ui_prompt_text(const char *, const char *, char *, size_t,
                        NavUiRedrawFn, void *);
 bool nav_ui_confirm(const char *, NavUiRedrawFn, void *);
+/* Enum picker: edits only on confirmation, including across resize. */
+bool nav_ui_select(const char *, const char *const *, size_t, int *,
+                   NavInputContext, NavUiRedrawFn, void *);
+void nav_ui_select_draw(int, int, int, const char *, const char *, NavStyle);
 
 typedef struct
 {

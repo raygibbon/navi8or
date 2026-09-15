@@ -60,16 +60,32 @@ void nav_history_push(NavHistory *h, const NavLocation *location)
 }
 const NavLocation *nav_history_back(NavHistory *h) { return h->current > 0 ? &h->locations[--h->current] : NULL; }
 const NavLocation *nav_history_forward(NavHistory *h) { return h->current + 1 < h->count ? &h->locations[++h->current] : NULL; }
-int nav_pane_load(NavPane *p, const NavLocation *location, bool hidden, bool history, char *err, size_t en)
+static int pane_load(NavPane *p, const NavLocation *location, bool hidden, bool history,
+                     const NavListOptions *options, char *err, size_t en)
 {
     if (!p->provider || !location || location->provider != p->provider ||
-        !nav_provider_supports(p->provider, NAV_CAP_LIST))
+        !nav_provider_supports(p->provider, NAV_CAP_LIST) ||
+        (!p->provider->list && !p->provider->list_progress))
     {
         snprintf(err, en, "provider cannot list this location");
         return -1;
     }
-    if (p->provider->list(p->provider, location->resource_id, hidden, &p->listing, err, en))
-        return -1;
+    NavListing pending = {0};
+    if (options && !p->provider->list_progress && options->cancel && options->cancel(options->userdata)) {
+        snprintf(err, en, "Repository listing cancelled"); return -1;
+    }
+    int result = p->provider->list_progress ?
+        p->provider->list_progress(p->provider, location->resource_id, hidden, &pending, options, err, en) :
+        p->provider->list(p->provider, location->resource_id, hidden, &pending, err, en);
+    if (result) { nav_listing_free(&pending); return -1; }
+    if (options && !p->provider->list_progress && options->progress) {
+        NavListProgress feedback = {0};
+        for (size_t i = 0; i < pending.count; i++)
+            if (!(pending.items[i].flags & NAV_ENTRY_PARENT)) feedback.entries++;
+        options->progress(&feedback, options->userdata);
+    }
+    nav_listing_free(&p->listing);
+    p->listing = pending;
     p->location = *location;
     p->selected = 0;
     p->offset = 0;
@@ -77,13 +93,26 @@ int nav_pane_load(NavPane *p, const NavLocation *location, bool hidden, bool his
         nav_history_push(&p->history, &p->location);
     return 0;
 }
+int nav_pane_load(NavPane *p, const NavLocation *location, bool hidden, bool history, char *err, size_t en)
+{ return pane_load(p, location, hidden, history, NULL, err, en); }
 int nav_pane_open(NavPane *p, const char *location, bool hidden, bool history, char *err, size_t en)
+{ return nav_pane_open_progress(p, location, hidden, history, NULL, err, en); }
+int nav_pane_open_progress(NavPane *p, const char *location, bool hidden, bool history,
+                           const NavListOptions *options, char *err, size_t en)
 {
     NavLocation resolved;
     if (!p->provider || !p->provider->location ||
         p->provider->location(p->provider, location, &resolved, err, en))
         return -1;
-    return nav_pane_load(p, &resolved, hidden, history, err, en);
+    return pane_load(p, &resolved, hidden, history, options, err, en);
+}
+void nav_format_entry_size(const NavEntry *entry, bool bytes, char *out, size_t size)
+{
+    if (!entry || !(entry->flags & NAV_ENTRY_SIZE_KNOWN)) { snprintf(out, size, "-"); return; }
+    char value[32];
+    if (bytes) snprintf(value, sizeof value, "%llu", (unsigned long long)entry->size);
+    else nav_format_size(entry->size, value, sizeof value);
+    snprintf(out, size, "%s%s", entry->flags & NAV_ENTRY_SIZE_APPROXIMATE ? "~" : "", value);
 }
 int nav_pane_refresh(NavPane *p, bool hidden, char *err, size_t en)
 {
@@ -305,8 +334,7 @@ void nav_format_entry_full_for_config(const NavEntry *entry, int width, char *ou
         int length, start;
         if (entry->flags & NAV_ENTRY_DIR) snprintf(size, sizeof size, "<DIR>");
         else if (entry->flags & NAV_ENTRY_SIZE_KNOWN) {
-            if (config && config->size_bytes) snprintf(size, sizeof size, "%llu", (unsigned long long)entry->size);
-            else nav_format_size(entry->size, size, sizeof size);
+            nav_format_entry_size(entry, config && config->size_bytes, size, sizeof size);
         }
         if (end > text_width) end = text_width;
         length = (int)strlen(size);
@@ -360,6 +388,18 @@ static int compare(const NavEntry *a, const NavEntry *b, const NavPane *pane)
         return a->modified > b->modified ? -1 : 1;
     return pane->case_sensitive_sort ? strcmp(a->name, b->name) : strcasecmp(a->name, b->name);
 }
+static void sift_entries(NavPane *pane, size_t root, size_t count)
+{
+    NavEntry item = pane->listing.items[root];
+    while (root < count / 2) {
+        size_t child = root * 2 + 1;
+        if (child + 1 < count && compare(&pane->listing.items[child], &pane->listing.items[child + 1], pane) < 0) child++;
+        if (compare(&item, &pane->listing.items[child], pane) >= 0) break;
+        pane->listing.items[root] = pane->listing.items[child];
+        root = child;
+    }
+    pane->listing.items[root] = item;
+}
 void nav_pane_sort(NavPane *p, NavSortMode mode)
 {
     char selected[NAV_PATH_MAX] = {0};
@@ -367,16 +407,14 @@ void nav_pane_sort(NavPane *p, NavSortMode mode)
     if (current)
         snprintf(selected, sizeof selected, "%s", current->resource_id);
     p->sort_mode = mode;
-    for (size_t i = 1; i < p->listing.count; i++)
-    {
-        NavEntry item = p->listing.items[i];
-        size_t j = i;
-        while (j > 0 && compare(&item, &p->listing.items[j - 1], p) < 0)
-        {
-            p->listing.items[j] = p->listing.items[j - 1];
-            j--;
-        }
-        p->listing.items[j] = item;
+    /* In-place heapsort avoids quadratic entry copies on unordered huge
+     * indexes without allocating a second array of large NavEntry records. */
+    for (size_t i = p->listing.count / 2; i > 0; i--) sift_entries(p, i - 1, p->listing.count);
+    for (size_t end = p->listing.count; end > 1; end--) {
+        NavEntry item = p->listing.items[0];
+        p->listing.items[0] = p->listing.items[end - 1];
+        p->listing.items[end - 1] = item;
+        sift_entries(p, 0, end - 1);
     }
     p->selected = 0;
     if (selected[0])

@@ -1,4 +1,5 @@
 #include "nav_ui_core.h"
+#include "nav_version.h"
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
@@ -167,6 +168,30 @@ static void test_bar_spacing(void)
     assert(narrow[3].column == 24);
 }
 
+static void test_identity(void)
+{
+    NavUiMenu menus[] = {{.label="File"}, {.label="View"}, {.label="Command"},
+        {.label="Repositories"}, {.label="Options"}, {.label="Help"}};
+    for (int style = NAV_UI_STYLE_MODERN; style <= NAV_UI_STYLE_CLASSIC; style++) {
+        bool full = false, name = false, hidden = false;
+        for (int width = 0; width <= 200; width++) {
+            NavUiMajor major[6]; int column;
+            nav_ui_get_bar_spacing_for_style(menus, 6, width, (NavUiStyle)style, major);
+            int end = major[5].column + major[5].width;
+            const char *identity = nav_ui_menu_identity(major, 6, width, true, &column);
+            if (identity[0]) {
+                assert(column + (int)strlen(identity) == width);
+                assert(column >= end + 2);
+                if (!strcmp(identity, NAV_APP_IDENTITY)) full = true;
+                else { assert(!strcmp(identity, NAV_APP_NAME)); name = true;
+                    assert(width - (int)strlen(NAV_APP_IDENTITY) < end + 2); }
+            } else { hidden = true; assert(width - (int)strlen(NAV_APP_NAME) < end + 2); }
+            assert(!nav_ui_menu_identity(major, 6, width, false, &column)[0]);
+        }
+        assert(full && name && hidden);
+    }
+}
+
 static void test_text_view(void)
 {
     NavUiTextView view = {0};
@@ -216,6 +241,7 @@ int main(void)
     test_field();
     test_clipboard_field();
     test_menu();
+    test_identity();
     test_bar_spacing();
     test_text_view();
     test_adjust_area();

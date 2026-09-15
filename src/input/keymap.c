@@ -194,10 +194,10 @@ int nav_keymap_label(const NavKeymap *map, NavInputContext context, NavCommand c
 
 static bool binding_scopes_overlap(NavInputContext a, NavInputContext b)
 {
-    if (a == b) return true;
-    NavInputContext other = a == NAV_CONTEXT_GLOBAL ? b : a;
-    return (a == NAV_CONTEXT_GLOBAL || b == NAV_CONTEXT_GLOBAL) &&
-           !(other >= NAV_CONTEXT_MENU && other <= NAV_CONTEXT_VAULT) && other != NAV_CONTEXT_PREFERENCES;
+    /* Context lookup is deterministic (the active context wins, then global),
+     * so equal physical keys in separate contexts are not configuration
+     * conflicts. Only bindings competing inside one declared context collide. */
+    return a == b;
 }
 bool nav_binding_overlaps(const NavBinding *a, const NavBinding *b)
 {

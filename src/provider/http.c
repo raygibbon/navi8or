@@ -1,4 +1,5 @@
 #include "nav.h"
+#include "nav_version.h"
 #include <curl/curl.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -19,7 +20,14 @@ typedef struct
     char credential_name[NAV_CREDENTIAL_NAME_MAX];
     NavCredentialStore *credential_store;
     bool tls_verify;
+    const NavConfig *config;
 } HttpProvider;
+
+void nav_http_provider_configure(NavProvider *provider, const NavConfig *config)
+{
+    if (provider && provider->scheme && !strcmp(provider->scheme, "http"))
+        ((HttpProvider *)provider)->config = config;
+}
 
 typedef struct
 {
@@ -37,6 +45,9 @@ typedef struct
     size_t *slots; /* entry index + 1; indexes survive listing reallocations */
     size_t slot_count, used;
     bool started, comment, memory_error, oversized, outside_root;
+    const NavListOptions *options;
+    NavListProgress progress;
+    bool cancelled;
 } HttpListingParser;
 
 #ifdef NAV_HTTP_LISTING_TESTING
@@ -202,13 +213,21 @@ static int configure_request(HttpProvider *http, CURL *easy,
 {
     CURLcode code;
     memset(credential, 0, sizeof *credential);
+    /* Empty explicitly bypasses environment proxies. NULL restores libcurl's
+     * default discovery, including NO_PROXY; never mutate the environment. */
+    code = curl_easy_setopt(easy, CURLOPT_PROXY,
+                            http->config && http->config->proxy_mode == NAV_PROXY_NONE ? "" : NULL);
+    if (code != CURLE_OK) {
+        snprintf(error, error_size, "unable to configure HTTP proxy: %s", curl_easy_strerror(code));
+        return -1;
+    }
     curl_easy_setopt(easy, CURLOPT_URL, resource_id);
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(easy, CURLOPT_MAXREDIRS, HTTP_REDIRECT_LIMIT);
     curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 3L);
     curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
     curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 15L);
-    curl_easy_setopt(easy, CURLOPT_USERAGENT, "Navi8or/0.1");
+    curl_easy_setopt(easy, CURLOPT_USERAGENT, NAV_APP_NAME "/" NAV_VERSION);
 #if LIBCURL_VERSION_NUM >= 0x075500 /* 7.85.0 */
     curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR,
@@ -508,15 +527,53 @@ static int listing_start(HttpListingParser *parser, const char *current)
     return 0;
 }
 
-static bool listing_size(const char *text, uint64_t *size)
+static bool listing_size(const char *text, uint64_t *size, bool *approximate)
 {
-    uint64_t value = 0;
-    if (!text || !*text) return false;
-    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
-        if (!isdigit(*p) || value > (UINT64_MAX - (*p - '0')) / 10) return false;
-        value = value * 10 + (*p - '0');
+    uint64_t value = 0, multiplier = 1;
+    long double fraction = 0, place = 0.1L;
+    bool fractional = false;
+    if (!text) return false;
+    while (isspace((unsigned char)*text)) text++;
+    if (!isdigit((unsigned char)*text)) return false;
+    while (isdigit((unsigned char)*text)) {
+        unsigned digit = (unsigned)(*text++ - '0');
+        if (value > (UINT64_MAX - digit) / 10) return false;
+        value = value * 10 + digit;
     }
-    *size = value;
+    if (*text == '.') {
+        text++; fractional = true;
+        if (!isdigit((unsigned char)*text)) return false;
+        unsigned digits = 0;
+        while (isdigit((unsigned char)*text)) {
+            if (++digits > 18) return false;
+            fraction += (*text++ - '0') * place; place /= 10;
+        }
+    }
+    while (isspace((unsigned char)*text)) text++;
+    char unit[4]; size_t length = 0;
+    while (*text && !isspace((unsigned char)*text)) {
+        if (length == sizeof unit - 1) return false;
+        unit[length++] = (char)tolower((unsigned char)*text++);
+    }
+    unit[length] = 0;
+    while (isspace((unsigned char)*text)) text++;
+    if (*text) return false;
+    unsigned power = 0;
+    if (length && strcmp(unit, "b")) {
+        const char *units = "kmgt", *prefix = strchr(units, unit[0]);
+        if (!prefix || (strcmp(unit + 1, "") && strcmp(unit + 1, "b") && strcmp(unit + 1, "ib"))) return false;
+        power = (unsigned)(prefix - units) + 1;
+        for (unsigned i = 0; i < power; i++) multiplier *= 1024;
+    }
+    if (fractional && !length) return false;
+    if (value > UINT64_MAX / multiplier) return false;
+    value *= multiplier;
+    /* Only the fractional component uses floating point; integer byte counts,
+     * including UINT64_MAX, never pass through a lossy conversion. */
+    uint64_t extra = (uint64_t)(fraction * multiplier);
+    if (value > UINT64_MAX - extra) return false;
+    *size = value + extra;
+    *approximate = power != 0 || fractional;
     return true;
 }
 
@@ -526,14 +583,20 @@ static bool listing_date(const char *date, const char *clock, time_t *modified)
                                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     int day, year, hour, minute, consumed = 0, month = -1;
     char name[4];
-    if (strlen(date) != 11 || strlen(clock) != 5 ||
-        sscanf(date, "%2d-%3[A-Za-z]-%4d%n", &day, name, &year, &consumed) != 3 ||
-        consumed != 11 || sscanf(clock, "%2d:%2d%n", &hour, &minute, &consumed) != 2 ||
+    if (strlen(date) == 10) {
+        int number;
+        if (sscanf(date, "%4d-%2d-%2d%n", &year, &number, &day, &consumed) != 3 || consumed != 10)
+            return false;
+        month = number - 1;
+    } else {
+        if (strlen(date) != 11 || sscanf(date, "%2d-%3[A-Za-z]-%4d%n", &day, name, &year, &consumed) != 3 || consumed != 11)
+            return false;
+        for (int index = 0; index < 12; index++)
+            if (!strcasecmp(name, months[index])) month = index;
+    }
+    if (strlen(clock) != 5 || sscanf(clock, "%2d:%2d%n", &hour, &minute, &consumed) != 2 ||
         consumed != 5 || year < 1900 || day < 1 || day > 31 || hour < 0 || hour > 23 ||
-        minute < 0 || minute > 59) return false;
-    for (int index = 0; index < 12; index++)
-        if (!strcasecmp(name, months[index])) month = index;
-    if (month < 0) return false;
+        minute < 0 || minute > 59 || month < 0 || month > 11) return false;
     /* nginx HTML has no timezone. Interpret its wall clock in the client's
      * local timezone, matching autoindex_localtime on when zones agree. */
     struct tm value = {.tm_year = year - 1900, .tm_mon = month, .tm_mday = day,
@@ -550,10 +613,13 @@ static bool listing_date(const char *date, const char *clock, time_t *modified)
 static void listing_finish_row(HttpListingParser *parser)
 {
     if (parser->has_entry && parser->metadata_text) {
-        char *parts[3] = {0}, *cursor = parser->row;
+        char *parts[2] = {0}, *cursor = parser->row;
         size_t count = 0;
         parser->row[parser->row_length] = 0;
-        while (*cursor && count < 3) {
+        /* Preserve the complete size tail, including separated unit tokens. */
+        char original[HTTP_ROW_LIMIT + 1];
+        memcpy(original, parser->row, parser->row_length + 1);
+        while (*cursor && count < 2) {
             while (*cursor && isspace((unsigned char)*cursor)) cursor++;
             if (!*cursor) break;
             parts[count++] = cursor;
@@ -562,16 +628,18 @@ static void listing_finish_row(HttpListingParser *parser)
         }
         NavEntry *entry = &parser->listing->items[parser->entry_index];
         uint64_t size;
+        bool approximate;
         time_t modified;
         if (count >= 2 && !(entry->flags & NAV_ENTRY_MODIFIED_KNOWN) &&
             listing_date(parts[0], parts[1], &modified)) {
             entry->modified = modified;
             entry->flags |= NAV_ENTRY_MODIFIED_KNOWN;
         }
-        const char *size_text = count >= 3 ? parts[2] : count == 1 ? parts[0] : NULL;
-        if (!(entry->flags & NAV_ENTRY_SIZE_KNOWN) && listing_size(size_text, &size)) {
+        const char *size_text = count == 2 && (strlen(parts[0]) == 11 || strlen(parts[0]) == 10) && strlen(parts[1]) == 5 ? cursor : original;
+        if (!(entry->flags & (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_DIR)) && listing_size(size_text, &size, &approximate)) {
             entry->size = size;
             entry->flags |= NAV_ENTRY_SIZE_KNOWN;
+            if (approximate) entry->flags |= NAV_ENTRY_SIZE_APPROXIMATE;
         }
     }
     parser->has_entry = parser->metadata_text = false;
@@ -721,7 +789,30 @@ static size_t receive_listing_data(char *data, size_t size, size_t count,
             parser->length = 0;
         }
     }
+    parser->progress.bytes_received += amount;
+    parser->progress.entries = parser->used;
+    if (parser->options && parser->options->progress)
+        parser->options->progress(&parser->progress, parser->options->userdata);
     return amount;
+}
+
+static int listing_progress(void *data, curl_off_t total, curl_off_t received,
+                            curl_off_t upload_total, curl_off_t uploaded)
+{
+    HttpListingParser *parser = data;
+    (void)received; (void)upload_total; (void)uploaded;
+    curl_off_t length = -1;
+    curl_easy_getinfo(parser->transport, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &length);
+    parser->progress.total_known = total > 0 || length >= 0;
+    parser->progress.total_bytes = total > 0 ? (uint64_t)total : length >= 0 ? (uint64_t)length : 0;
+    if (parser->options && parser->options->cancel &&
+        parser->options->cancel(parser->options->userdata)) {
+        parser->cancelled = true;
+        return 1;
+    }
+    if (parser->options && parser->options->progress)
+        parser->options->progress(&parser->progress, parser->options->userdata);
+    return 0;
 }
 
 static void listing_error(const HttpListingParser *parser, char *error,
@@ -1609,6 +1700,25 @@ static int http_read_at(NavProvider *provider, const char *resource_id,
     return 0;
 }
 
+typedef struct { time_t modified; bool known; } HttpStatDate;
+static size_t stat_date_header(char *data, size_t size, size_t count, void *userdata)
+{
+    HttpStatDate *date = userdata;
+    if (size && count > SIZE_MAX / size) return 0;
+    size_t length = size * count;
+    if (length >= 5 && !memcmp(data, "HTTP/", 5)) date->known = false;
+    if (length > 14 && !strncasecmp(data, "Last-Modified:", 14)) {
+        char value[128];
+        size_t bytes = length - 14;
+        if (bytes < sizeof value) {
+            memcpy(value, data + 14, bytes); value[bytes] = 0;
+            time_t modified = curl_getdate(value, NULL);
+            date->known = modified != (time_t)-1;
+            date->modified = modified;
+        }
+    }
+    return length;
+}
 static int http_stat(NavProvider *provider, const char *resource_id,
                      NavEntry *entry, char *error, size_t error_size)
 {
@@ -1616,7 +1726,8 @@ static int http_stat(NavProvider *provider, const char *resource_id,
     CURL *easy;
     CURLcode code;
     long status = 0;
-    curl_off_t length = -1, modified = -1;
+    curl_off_t length = -1;
+    HttpStatDate date = {0};
     char *effective = NULL;
     NavResolvedCredential credential = {0};
     if (!resource_id || !entry || !url_is_within_root(http, resource_id)) {
@@ -1632,12 +1743,14 @@ static int http_stat(NavProvider *provider, const char *resource_id,
     }
     curl_easy_setopt(easy, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);
-    curl_easy_setopt(easy, CURLOPT_FILETIME, 1L);
+    /* Validate the actual header: some curl versions map malformed dates to
+     * epoch zero in FILETIME_T, which must not invent known metadata. */
+    curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, stat_date_header);
+    curl_easy_setopt(easy, CURLOPT_HEADERDATA, &date);
     code = curl_easy_perform(easy);
     curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_getinfo(easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &length);
     curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &effective);
-    curl_easy_getinfo(easy, CURLINFO_FILETIME_T, &modified);
     if (code != CURLE_OK || status < 200 || status >= 300 || !effective ||
         !url_is_within_root(http, effective)) {
         if (code != CURLE_OK)
@@ -1668,8 +1781,8 @@ static int http_stat(NavProvider *provider, const char *resource_id,
         entry->size = (uint64_t)length;
         entry->flags |= NAV_ENTRY_SIZE_KNOWN;
     }
-    if (modified != -1 && (curl_off_t)(time_t)modified == modified) {
-        entry->modified = (time_t)modified;
+    if (date.known) {
+        entry->modified = date.modified;
         entry->flags |= NAV_ENTRY_MODIFIED_KNOWN;
     }
     curl_easy_cleanup(easy);
@@ -1677,13 +1790,13 @@ static int http_stat(NavProvider *provider, const char *resource_id,
     return 0;
 }
 
-static int http_list(NavProvider *provider, const char *resource_id, bool hidden,
-                     NavListing *listing, char *error, size_t error_size)
+static int http_list_progress(NavProvider *provider, const char *resource_id, bool hidden,
+                     NavListing *listing, const NavListOptions *options, char *error, size_t error_size)
 {
     HttpProvider *http = provider->context;
     NavListing pending = {0};
     HttpListingParser parser = {.http = http, .listing = &pending,
-                                .transport = http->easy};
+                                .transport = http->easy, .options = options};
     CURLcode code;
     long status = 0;
     char *effective = NULL;
@@ -1696,6 +1809,9 @@ static int http_list(NavProvider *provider, const char *resource_id, bool hidden
         goto finish;
     curl_easy_setopt(http->easy, CURLOPT_WRITEFUNCTION, receive_listing_data);
     curl_easy_setopt(http->easy, CURLOPT_WRITEDATA, &parser);
+    curl_easy_setopt(http->easy, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(http->easy, CURLOPT_XFERINFOFUNCTION, listing_progress);
+    curl_easy_setopt(http->easy, CURLOPT_XFERINFODATA, &parser);
     curl_easy_setopt(http->easy, CURLOPT_TIMEOUT, 10L);
     code = curl_easy_perform(http->easy);
     curl_easy_getinfo(http->easy, CURLINFO_RESPONSE_CODE, &status);
@@ -1705,7 +1821,8 @@ static int http_list(NavProvider *provider, const char *resource_id, bool hidden
         goto finish;
     }
     if (code != CURLE_OK) {
-        if (code == CURLE_PEER_FAILED_VERIFICATION || code == CURLE_SSL_CACERT_BADFILE)
+        if (parser.cancelled) snprintf(error, error_size, "Repository listing cancelled");
+        else if (code == CURLE_PEER_FAILED_VERIFICATION || code == CURLE_SSL_CACERT_BADFILE)
             snprintf(error, error_size, "TLS verification failed: %s",
                      curl_easy_strerror(code));
         else
@@ -1728,6 +1845,8 @@ static int http_list(NavProvider *provider, const char *resource_id, bool hidden
         goto finish;
     }
     listing_finish_row(&parser);
+    parser.progress.entries = parser.used;
+    if (options && options->progress) options->progress(&parser.progress, options->userdata);
     nav_listing_free(listing);
     *listing = pending;
     memset(&pending, 0, sizeof pending);
@@ -1738,6 +1857,9 @@ finish:
     nav_resolved_credential_free(&credential);
     return result;
 }
+static int http_list(NavProvider *provider, const char *resource_id, bool hidden,
+                     NavListing *listing, char *error, size_t error_size)
+{ return http_list_progress(provider, resource_id, hidden, listing, NULL, error, error_size); }
 
 static void http_destroy(NavProvider *provider)
 {
@@ -1805,6 +1927,7 @@ NavProvider *nav_http_provider_create(const NavRepository *repository,
     http->provider.location_child = http_child;
     http->provider.location_parent = http_parent;
     http->provider.list = http_list;
+    http->provider.list_progress = http_list_progress;
     http->provider.remove = repository->delete_enabled ? http_remove : NULL;
     http->provider.mkdir = repository->mkdir_enabled ? http_mkdir : NULL;
     http->provider.rename_path = repository->rename_enabled ? http_rename : NULL;

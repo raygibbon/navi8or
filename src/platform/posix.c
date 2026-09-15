@@ -7,6 +7,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+uint64_t nav_platform_milliseconds(void)
+{
+    struct timespec now = {0};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
 int nav_platform_config_dir(char *path, size_t capacity)
 {
     const char *base = getenv("XDG_CONFIG_HOME");

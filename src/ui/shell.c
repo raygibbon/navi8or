@@ -9,6 +9,7 @@ void nav_ui_request_quit(void) { quit_requested = true; }
 bool nav_ui_quit_requested(void) { return quit_requested; }
 static const NavKeymap *keymap;
 static const NavConfig *live_config;
+bool nav_ui_show_app_identity(void) { return !live_config || live_config->show_app_identity; }
 static NavKeymap defaults;
 static NavInputContext workspace = NAV_CONTEXT_PANEL;
 void nav_ui_input_configure(const NavConfig *config)

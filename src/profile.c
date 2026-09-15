@@ -16,6 +16,21 @@ static char *copy_bytes(const char *text, size_t n)
     memcpy(copy, text, n); copy[n] = 0; return copy;
 }
 
+bool nav_settings_same(const NavConfig *a, const NavConfig *b)
+{
+    return a->proxy_mode == b->proxy_mode && a->confirm_delete == b->confirm_delete &&
+        a->confirm_overwrite == b->confirm_overwrite && a->menu_remember_position == b->menu_remember_position &&
+        a->history_enabled == b->history_enabled && a->editor_wait == b->editor_wait &&
+        !strcmp(a->editor_command, b->editor_command);
+}
+bool nav_settings_dirty(const NavApp *app)
+{ return app->settings_saved && !nav_settings_same(&app->config, app->settings_saved); }
+void nav_settings_mark_saved(NavApp *app)
+{
+    if (!app->settings_saved) app->settings_saved = malloc(sizeof *app->settings_saved);
+    if (app->settings_saved) *app->settings_saved = app->config;
+}
+
 void nav_profile_mark_saved(NavApp *app)
 {
     if (!app->profile_saved) app->profile_saved = malloc(sizeof *app->profile_saved);
@@ -27,6 +42,7 @@ void nav_profile_changed(NavApp *app)
 
 int nav_profile_begin(NavApp *app, NavProfileSession *session)
 {
+    if (!app->settings_saved) { nav_settings_mark_saved(app); if (!app->settings_saved) return -1; }
     if (!app->profile_saved) { nav_profile_mark_saved(app); if (!app->profile_saved) return -1; }
     session->before = malloc(sizeof *session->before);
     if (!session->before) return -1;
@@ -53,6 +69,7 @@ bool nav_profile_same_ui(const NavConfig *a, const NavConfig *b)
 {
 #define SAME(field) if (a->field != b->field) return false
     SAME(show_menu); SAME(show_status); SAME(show_function_bar);
+    SAME(show_app_identity);
     SAME(show_menu_keys); SAME(show_dialog_keys); SAME(show_help_keys);
     SAME(column_separator); SAME(pane_show_size); SAME(pane_show_modified); SAME(size_bytes);
     SAME(show_hidden); SAME(directories_first); SAME(case_sensitive_sort); SAME(sort); SAME(panel_view);
@@ -132,7 +149,8 @@ static char *skip_space(char *p) { while (*p == ' ' || *p == '\t' || *p == '\r')
 static bool header(const char *line, char *out, size_t size)
 {
     const char *p = line; while (isspace((unsigned char)*p)) p++;
-    if (*p != '[' || p[1] == '[') return false;
+    if (*p != '[') return false;
+    if (p[1] == '[') { snprintf(out, size, "@array"); return true; }
     const char *end = strchr(p + 1, ']'); if (!end) return false;
     size_t n = (size_t)(end - p - 1); if (n >= size) return false;
     memcpy(out, p + 1, n); out[n] = 0; return true;
@@ -253,6 +271,66 @@ static int binding_array(const NavKeymap *map, NavInputContext context, NavComma
     snprintf(out + used, size - used, "]"); return 0;
 }
 
+/* Operational settings use the same surgical writer, but never profile data.
+ * Validate the complete document before atomically replacing nav.toml. */
+int nav_config_save_settings(const NavConfig *config, char *error, size_t size)
+{
+    Document doc = {0};
+    const char *path = config->config_path;
+    FILE *file = nav_platform_fopen(path, "rb");
+    if (!file) goto failure;
+    char *line = NULL; size_t capacity = 0;
+    while (nav_platform_getline(&line, &capacity, file) >= 0)
+        if (insert(&doc, doc.count, line)) { free(line); fclose(file); goto failure; }
+    free(line); bool failed = ferror(file); fclose(file);
+    if (failed) goto failure;
+    if (nav_config_validate(config, error, size) || nav_profile_is_template(path) ||
+        has_table(&doc, "profile") || has_assignment(&doc, "theme", "format")) goto failure;
+#define SET(section, key, value) do { if (update(&doc, section, key, value)) goto failure; } while (0)
+    SET("network", "proxy_mode", config->proxy_mode == NAV_PROXY_NONE ? "\"none\"" : "\"system\"");
+    SET("general", "confirm_delete", config->confirm_delete ? "true" : "false");
+    SET("general", "confirm_overwrite", config->confirm_overwrite ? "true" : "false");
+    SET("menu", "remember_position", config->menu_remember_position ? "true" : "false");
+    SET("history", "enabled", config->history_enabled ? "true" : "false");
+    SET("editor", "wait", config->editor_wait ? "true" : "false");
+    char value[256]; if (quoted(config->editor_command, value, sizeof value)) goto failure;
+    SET("editor", "command", value);
+    /* app.confirm_delete is a supported legacy alias with higher precedence. */
+    if (has_assignment(&doc, "app", "confirm_delete"))
+        SET("app", "confirm_delete", config->confirm_delete ? "true" : "false");
+#undef SET
+    size_t length = 1;
+    for (size_t i = 0; i < doc.count; i++) length += strlen(doc.lines[i]);
+    char *text = malloc(length); if (!text) goto failure;
+    char *end = text;
+    for (size_t i = 0; i < doc.count; i++) { size_t n = strlen(doc.lines[i]); memcpy(end, doc.lines[i], n); end += n; }
+    *end = 0;
+    char reason[256]; toml_table_t *root = toml_parse(text, reason, sizeof reason); free(text);
+    if (!root) goto failure;
+    toml_free(root);
+    char temporary[NAV_PATH_MAX];
+    if (snprintf(temporary, sizeof temporary, "%s.tmp-XXXXXX", path) >= (int)sizeof temporary) goto failure;
+    int fd = nav_platform_mkstemp(temporary); if (fd < 0) goto failure;
+    file = fdopen(fd, "wb");
+    if (!file) { close(fd); nav_platform_unlink(temporary); goto failure; }
+    failed = false;
+    for (size_t i = 0; i < doc.count; i++) if (fputs(doc.lines[i], file) == EOF) failed = true;
+    if (fflush(file) || nav_platform_sync(fd)) failed = true;
+    if (fclose(file)) failed = true;
+    NavConfig *check = malloc(sizeof *check);
+    if (!check) failed = true;
+    else {
+        if (nav_config_load_operational_file(check, temporary, error, size) || !nav_settings_same(config, check)) failed = true;
+        free(check);
+    }
+    if (!failed && nav_platform_replace(temporary, path)) failed = true;
+    if (failed) { nav_platform_unlink(temporary); goto failure; }
+    document_free(&doc); return 0;
+failure:
+    snprintf(error, size, "%s: cannot safely save operational settings; original retained", path);
+    document_free(&doc); return -1;
+}
+
 int nav_profile_save(NavConfig *config, const char *path, char *error, size_t size)
 {
     if (nav_profile_is_template(path) || !strcmp(path, config->config_path)) {
@@ -338,6 +416,7 @@ int nav_profile_save(NavConfig *config, const char *path, char *error, size_t si
     if (convert || config->profile.shadow != base->profile.shadow) { PUT("ui.frame", "shadow", config->profile.shadow ? "true" : "false"); if (has_assignment(&doc, "layout", "shadow")) PUT("layout", "shadow", config->profile.shadow ? "true" : "false"); }
     BOOL("layout", "show_menu", show_menu); BOOL("layout", "show_status", show_status);
     BOOL("layout", "show_function_bar", show_function_bar);
+    BOOL("layout", "show_app_identity", show_app_identity);
     if (config->column_separator != base->column_separator) {
         if (config->column_separator < 0) STR("layout", "show_column_separator", "auto");
         else PUT("layout", "show_column_separator", config->column_separator ? "true" : "false");
