@@ -335,10 +335,19 @@ void nav_format_entry_full_for_config(const NavEntry *entry, int width, char *ou
         if (entry->flags & NAV_ENTRY_DIR) snprintf(size, sizeof size, "<DIR>");
         else if (entry->flags & NAV_ENTRY_SIZE_KNOWN) {
             nav_format_entry_size(entry, config && config->size_bytes, size, sizeof size);
+            /* Normal panel sizes are clean; Properties retains the explicit
+             * approximation marker and the underlying flag remains intact. */
+            if (size[0] == '~') memmove(size, size + 1, strlen(size));
+            if ((int)strlen(size) > layout.size_width)
+                nav_format_size(entry->size, size, sizeof size);
         }
         if (end > text_width) end = text_width;
         length = (int)strlen(size);
-        if (length > end - layout.size_column) length = end - layout.size_column;
+        if (length > end - layout.size_column) {
+            snprintf(size, sizeof size, "...");
+            length = (int)strlen(size);
+            if (length > end - layout.size_column) length = end - layout.size_column;
+        }
         start = end - length;
         if (length > 0) memcpy(output + start, size, (size_t)length);
     }

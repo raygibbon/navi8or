@@ -51,7 +51,15 @@ static void metadata_cases(NavProvider *provider, const char *url)
         {" 18014398509481983K", APPROX, UINT64_MAX - 1023},
         {" 18014398509481984K", 0, 0}, {" 18446744073709551615T", 0, 0},
         {" 1XB", 0, 0}, {" 1KBjunk", 0, 0}, {" 1..5M", 0, 0}, {" 1.M", 0, 0},
-        {" .5M", 0, 0}, {" 1e3K", 0, 0}, {" 1.5", 0, 0}, {" 123 B extra", 0, 0},
+        {" .5M", 0, 0}, {" 1e3K", 0, 0}, {" 1.5", 0, 0}, {" 123 B extra", NAV_ENTRY_SIZE_KNOWN, 123},
+        {" 15-Sep-2026 14:30 14K text/plain", APPROX | NAV_ENTRY_MODIFIED_KNOWN, 14336},
+        {" 15-Sep-2026 14:30 14K", APPROX | NAV_ENTRY_MODIFIED_KNOWN, 14336},
+        {" 15-Sep-2026 14:30 123", NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_MODIFIED_KNOWN, 123},
+        {"\t15-Sep-2026\t14:30\t14\tKiB\ttext/plain", APPROX | NAV_ENTRY_MODIFIED_KNOWN, 14336},
+        {" 15-Sep-2026 14:30 14 KiB Description", APPROX | NAV_ENTRY_MODIFIED_KNOWN, 14336},
+        {" 15-Sep-2026 14:30 - 123 misleading description", NAV_ENTRY_MODIFIED_KNOWN, 0},
+        {" 15-Sep-2026 14:30 unknown 123", NAV_ENTRY_MODIFIED_KNOWN, 0},
+        {"&nbsp;15-Sep-2026&#32;14:30&#x20;14KB&nbsp;text/plain", APPROX | NAV_ENTRY_MODIFIED_KNOWN, 14336},
 #undef APPROX
     };
     for (size_t index = 0; index < sizeof cases / sizeof cases[0]; index++) {
@@ -68,16 +76,17 @@ static void metadata_cases(NavProvider *provider, const char *url)
             if (entry->flags & NAV_ENTRY_SIZE_APPROXIMATE) {
                 char display[32], row[100]; nav_format_entry_size(entry, false, display, sizeof display);
                 assert(display[0] == '~'); nav_format_entry_full(entry, 90, row, sizeof row);
-                assert(strstr(row, display));
+                assert(strstr(row, display + 1) && !strchr(row, '~'));
             }
             if (entry->flags & NAV_ENTRY_SIZE_KNOWN) assert(entry->size == cases[index].size);
             if (entry->flags & NAV_ENTRY_MODIFIED_KNOWN) {
                 struct tm *tm = localtime(&entry->modified);
-                assert(tm && tm->tm_year == 126 && tm->tm_mon == 8 && tm->tm_mday == 14);
-                assert(tm->tm_hour == 18 && tm->tm_min == 45);
+                bool next_day = strstr(cases[index].tail, "15-Sep") != NULL;
+                assert(tm && tm->tm_year == 126 && tm->tm_mon == 8 && tm->tm_mday == (next_day ? 15 : 14));
+                assert(tm->tm_hour == (next_day ? 14 : 18) && tm->tm_min == (next_day ? 30 : 45));
                 char row[100], size[32];
                 nav_format_entry_full(entry, 90, row, sizeof row);
-                assert(strstr(row, "2026-09-14 18:45"));
+                assert(strstr(row, next_day ? "2026-09-15 14:30" : "2026-09-14 18:45"));
                 if (entry->flags & NAV_ENTRY_SIZE_KNOWN) {
                     nav_format_size(entry->size, size, sizeof size);
                     assert(strstr(row, size));
@@ -95,6 +104,29 @@ static void metadata_cases(NavProvider *provider, const char *url)
     assert((listing.items[1].flags & (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_SIZE_APPROXIMATE | NAV_ENTRY_MODIFIED_KNOWN)) ==
            (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_SIZE_APPROXIMATE | NAV_ENTRY_MODIFIED_KNOWN));
     nav_listing_free(&listing);
+    const char *tables[] = {
+        "<tr><td><a href='d'>d</a></td><td>15-Sep-2026 14:30</td><td>2.5M</td><td>log file</td></tr>",
+        "<tr>\n<td><a href='d'>d</a></td>\n<td>15-Sep-2026&nbsp;14:30</td>\n<td>2.5 MiB</td><td></td></tr>",
+        "<tr><td><a href='d'>d</a></td><td>15-Sep-2026 14:30</td><td>2.5M</td><td>123 &amp; description</td></tr>"
+    };
+    for (size_t i = 0; i < sizeof tables / sizeof tables[0]; i++) {
+        for (size_t chunk = 1; chunk <= strlen(tables[i]); chunk++) {
+            assert(!nav_http_test_parse_chunks(provider, url, tables[i], strlen(tables[i]), chunk, &listing, error, sizeof error));
+            assert(listing.count == 2 && listing.items[1].size == 2621440);
+            assert(listing.items[1].flags & NAV_ENTRY_SIZE_APPROXIMATE);
+            nav_listing_free(&listing);
+        }
+    }
+    const char *missing = "<tr><td><a href='empty'>empty</a></td>"
+        "<td>15-Sep-2026 14:30</td><td></td><td>123 misleading description</td></tr>";
+    assert(!nav_http_test_parse_chunks(provider, url, missing, strlen(missing), 1, &listing, error, sizeof error));
+    assert(listing.count == 2 && !(listing.items[1].flags & NAV_ENTRY_SIZE_KNOWN));
+    nav_listing_free(&listing);
+    NavEntry enormous = {.size = UINT64_MAX, .flags = NAV_ENTRY_SIZE_KNOWN};
+    NavConfig byte_config; nav_config_defaults(&byte_config); byte_config.size_bytes = true;
+    char row[100], human[32]; nav_format_size(enormous.size, human, sizeof human);
+    nav_format_entry_full_for_config(&enormous, 90, row, sizeof row, &byte_config);
+    assert(strstr(row, human) && !strstr(row, "184467440737"));
     const char *html = "<a href='sub/'>sub/</a> 14-Sep-2026 18:45 -\n"
         "<a href='foo.txt'>foo</a>\n<a href='foo.txt'>duplicate</a> 14-Sep-2026 18:45 123";
     assert(nav_http_test_parse_chunks(provider, url, html, strlen(html), 1,
@@ -181,13 +213,16 @@ int main(int argc, char **argv)
                 assert(!strcmp(listing.items[1].name, (!strcmp(mode, "large") || !strcmp(mode, "known")) ? "file00000.txt" : "foo.txt"));
             if (!strcmp(mode, "large") || !strcmp(mode, "known")) {
                 const uint64_t sizes[] = {123, 14336, 2621440, 8589934592ULL, 0, 0, UINT64_MAX};
+                size_t known_sizes = 0;
                 for (size_t index = 1; index < listing.count; index++) {
                     size_t variant = (index - 1) % 7;
                     assert(listing.items[index].size == sizes[variant]);
                     assert(!!(listing.items[index].flags & NAV_ENTRY_SIZE_KNOWN) == (variant != 4));
                     assert(!!(listing.items[index].flags & NAV_ENTRY_SIZE_APPROXIMATE) == (variant >= 1 && variant <= 3));
                     assert(listing.items[index].flags & NAV_ENTRY_MODIFIED_KNOWN);
+                    if (listing.items[index].flags & NAV_ENTRY_SIZE_KNOWN) known_sizes++;
                 }
+                printf("%zu known-size entries of %zu\n", known_sizes, listing.count - 1);
                 assert(reports.calls > 10 && reports.increases > 10 && reports.entries == expected - 1);
                 assert(reports.known == !strcmp(mode, "known"));
                 if (reports.known) assert(reports.bytes == reports.total && reports.total > 1024 * 1024);

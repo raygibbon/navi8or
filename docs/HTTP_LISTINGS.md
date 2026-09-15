@@ -17,14 +17,20 @@ values outside `uint64_t` are rejected rather than wrapped.
 
 `NAV_ENTRY_SIZE_KNOWN` permits display, sorting and summaries;
 `NAV_ENTRY_SIZE_APPROXIMATE` additionally identifies rounded listing metadata.
-Panels show, for example, `~14 KB` or `~2.5 MB`. Summaries indicate rounded,
+Panels show clean sizes, for example, `14 KB` or `2.5 MB`; Properties retains
+the `~` approximation marker. Byte-mode values too wide for the size column
+fall back to human-readable units rather than clipping significant digits.
+Summaries indicate rounded,
 incomplete or saturated totals with `~`. Directories and unavailable `-` sizes
 do not acquire a known zero-byte size.
 
 Both `14-Sep-2026 18:45` and `2026-09-14 18:45` dates are supported alongside
 sizes in preformatted and simple table rows, including metadata split across
 transport callbacks. Generic `<a href>` indexes remain best-effort: missing
-metadata stays unknown. JavaScript-generated listings, sizes only in attributes
+metadata stays unknown. Size fields ignore trailing descriptions or MIME
+types. Table-cell boundaries and whitespace entities are retained/normalized
+by the streaming parser, including multiline rows, without building a DOM.
+JavaScript-generated listings, sizes only in attributes
 or anchor labels, unrelated date layouts and arbitrary description columns are
 not interpreted as authoritative size/date metadata.
 

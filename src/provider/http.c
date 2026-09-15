@@ -40,7 +40,7 @@ typedef struct
     char quote;
     char row[HTTP_ROW_LIMIT + 1];
     size_t row_length, row_bytes, entry_index;
-    bool has_entry, metadata_text;
+    bool has_entry, metadata_text, table_row;
     unsigned comment_dashes;
     size_t *slots; /* entry index + 1; indexes survive listing reallocations */
     size_t slot_count, used;
@@ -577,6 +577,55 @@ static bool listing_size(const char *text, uint64_t *size, bool *approximate)
     return true;
 }
 
+/* Consume one size field, not the description following it. */
+static bool listing_size_field(const char *text, bool cell, uint64_t *size, bool *approximate)
+{
+    char field[64];
+    size_t length = 0;
+    while (isspace((unsigned char)*text) && (!cell || *text != '\t')) text++;
+    while (*text && !isspace((unsigned char)*text)) {
+        if (length + 1 >= sizeof field) return false;
+        field[length++] = *text++;
+    }
+    field[length] = 0;
+    /* A separated unit belongs to the size only if it is a valid unit.
+     * Tabs are retained HTML cell boundaries: never borrow a description cell. */
+    while (isspace((unsigned char)*text) && (!cell || *text != '\t')) text++;
+    char unit[4]; size_t n = 0;
+    while (text[n] && !isspace((unsigned char)text[n]) && n < sizeof unit - 1) {
+        unit[n] = text[n]; n++;
+    }
+    unit[n] = 0;
+    uint64_t ignored; bool rounded;
+    char probe[16];
+    snprintf(probe, sizeof probe, "1 %s", unit);
+    if (strspn(field, "0123456789.") == length && n &&
+        (!text[n] || isspace((unsigned char)text[n])) &&
+        listing_size(probe, &ignored, &rounded) && length + n + 2 <= sizeof field) {
+        field[length++] = ' ';
+        memcpy(field + length, unit, n + 1);
+    }
+    return listing_size(field, size, approximate);
+}
+
+/* Decode only whitespace entities needed to delimit metadata. Other entities
+ * remain text; they must not accidentally turn a description into a size. */
+static void listing_metadata_spaces(char *row)
+{
+    char *out = row;
+    while (*row) {
+        size_t length = 0;
+        if (!strncmp(row, "&nbsp;", 6)) length = 6;
+        else if (!strncmp(row, "&#160;", 6)) length = 6;
+        else if (!strncmp(row, "&#32;", 5)) length = 5;
+        else if (!strncasecmp(row, "&#xa0;", 6)) length = 6;
+        else if (!strncasecmp(row, "&#x20;", 6)) length = 6;
+        if (length) { *out++ = ' '; row += length; }
+        else *out++ = *row++;
+    }
+    *out = 0;
+}
+
 static bool listing_date(const char *date, const char *clock, time_t *modified)
 {
     static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -616,9 +665,10 @@ static void listing_finish_row(HttpListingParser *parser)
         char *parts[2] = {0}, *cursor = parser->row;
         size_t count = 0;
         parser->row[parser->row_length] = 0;
-        /* Preserve the complete size tail, including separated unit tokens. */
+        listing_metadata_spaces(parser->row);
+        /* Preserve size-field boundaries, including separated unit tokens. */
         char original[HTTP_ROW_LIMIT + 1];
-        memcpy(original, parser->row, parser->row_length + 1);
+        snprintf(original, sizeof original, "%s", parser->row);
         while (*cursor && count < 2) {
             while (*cursor && isspace((unsigned char)*cursor)) cursor++;
             if (!*cursor) break;
@@ -636,7 +686,18 @@ static void listing_finish_row(HttpListingParser *parser)
             entry->flags |= NAV_ENTRY_MODIFIED_KNOWN;
         }
         const char *size_text = count == 2 && (strlen(parts[0]) == 11 || strlen(parts[0]) == 10) && strlen(parts[1]) == 5 ? cursor : original;
-        if (!(entry->flags & (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_DIR)) && listing_size(size_text, &size, &approximate)) {
+        /* In a table, the cell after the date is the size, even if empty.
+         * Do not skip empty size cells and consume numeric descriptions. */
+        const char *first = original;
+        while (isspace((unsigned char)*first)) first++;
+        const char *boundary = strchr(first, '\t');
+        if (parser->table_row && boundary && size_text == cursor) size_text = boundary + 1;
+        else if (parser->table_row && size_text == original) {
+            const char *leading = original;
+            while (*leading == ' ') leading++;
+            if (*leading == '\t') size_text = leading + 1;
+        }
+        if (!(entry->flags & (NAV_ENTRY_SIZE_KNOWN | NAV_ENTRY_DIR)) && listing_size_field(size_text, parser->table_row, &size, &approximate)) {
             entry->size = size;
             entry->flags |= NAV_ENTRY_SIZE_KNOWN;
             if (approximate) entry->flags |= NAV_ENTRY_SIZE_APPROXIMATE;
@@ -663,6 +724,8 @@ static int listing_tag(HttpListingParser *parser)
     if (listing_tag_is(parser, "tr") || listing_tag_is(parser, "/tr") ||
         listing_tag_is(parser, "br") || listing_tag_is(parser, "/pre")) {
         listing_finish_row(parser);
+        if (listing_tag_is(parser, "tr")) parser->table_row = true;
+        if (listing_tag_is(parser, "/tr")) parser->table_row = false;
         return 0;
     }
     if (listing_tag_is(parser, "/a")) {
@@ -671,7 +734,8 @@ static int listing_tag(HttpListingParser *parser)
     }
     if (!listing_tag_is(parser, "a")) {
         if (parser->metadata_text && parser->row_length < HTTP_ROW_LIMIT)
-            parser->row[parser->row_length++] = ' ';
+            parser->row[parser->row_length++] = listing_tag_is(parser, "/td") ||
+                listing_tag_is(parser, "/th") ? '\t' : ' ';
         return 0;
     }
     listing_finish_row(parser);
@@ -757,8 +821,9 @@ static size_t receive_listing_data(char *data, size_t size, size_t count,
         if (!parser->length) {
             if (ch != '<') {
                 if (parser->metadata_text) {
-                    if (ch == '\n' || ch == '\r') listing_finish_row(parser);
-                    else parser->row[parser->row_length++] = ch;
+                    if ((ch == '\n' || ch == '\r') && !parser->table_row) listing_finish_row(parser);
+                    else if (ch == '\n' || ch == '\r') parser->row[parser->row_length++] = ' ';
+                    else parser->row[parser->row_length++] = parser->table_row && ch == '\t' ? ' ' : ch;
                 }
                 continue;
             }

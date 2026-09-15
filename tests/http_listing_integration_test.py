@@ -32,8 +32,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         def row(index):
             size = ("123", "14K", "2.5M", "8G", "-", "0", "18446744073709551615")[index % 7]
-            return (f"<a data-padding='{('x' * 900)}' href='file{index:05d}.txt'>f</a>"
-                    f" 14-Sep-2026 18:45 {size}\r\n").encode()
+            link = f"<a data-padding='{('x' * 900)}' href='file{index:05d}.txt'>f</a>"
+            if index % 3 == 0:
+                return (f"<tr><td>{link}</td><td>14-Sep-2026 18:45</td>"
+                        f"<td>{size}</td><td>log file</td></tr>\r\n").encode()
+            return (f"{link} 14-Sep-2026 18:45 {size}"
+                    f"{' text/plain' if index % 3 == 1 else ''}\r\n").encode()
         known = mode == "known"
         self.send_response(200)
         self.send_header("Connection", "close")
@@ -52,7 +56,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pass
             elif mode == "panel":
                 emit(b"<pre><a href='foo.txt'>foo.txt</a> 14-Sep-2026 18:45 123\r\n"
-                     b"<a href='bar.log'>bar.log</a> 14-Sep-2026 18:45 14K\r\n"
+                     b"<a href='bar.log'>bar.log</a> 14-Sep-2026 18:45 14K text/plain\r\n"
+                     b"<tr><td><a href='medium.log'>medium.log</a></td><td>14-Sep-2026 18:45</td><td>2.5M</td><td>log file</td></tr>"
+                     b"<a href='large.log'>large.log</a> 14-Sep-2026 18:45 8G Description\r\n"
+                     b"<a href='zero.log'>zero.log</a> 14-Sep-2026 18:45 0\r\n"
+                     b"<a href='unknown.log'>unknown.log</a> 14-Sep-2026 18:45 -\r\n"
+                     b"<a href='huge.log'>huge.log</a> 14-Sep-2026 18:45 18446744073709551615 text/plain\r\n"
                      b"<a href='sub/'>sub/</a> 14-Sep-2026 18:45 -\r\n</pre>")
             elif mode in ("large", "known", "cancel", "slow"):
                 # Over 50 MiB of HTML, but only 30,000 unique entries.
@@ -87,12 +96,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
 
-def panel_metadata(nav, url):
+def panel_metadata(nav, url, byte_mode=False):
     with tempfile.TemporaryDirectory(prefix="nav-http-metadata-") as root:
         config = os.path.join(root, "nav")
         os.mkdir(config)
         with open(os.path.join(config, "nav.toml"), "w") as stream:
             stream.write('[menu]\nremember_position = false\n[panels]\nview = "full"\n')
+            if byte_mode:
+                stream.write('size_format = "bytes"\n')
         with open(os.path.join(config, "repositories.toml"), "w") as stream:
             stream.write(f'[[repositories]]\nname = "Metadata Test"\nurl = "{url}"\n')
         screen = TerminalScreen(180, 30)
@@ -106,10 +117,20 @@ def panel_metadata(nav, url):
                 send(b"\x1b[1;5C")
             send(b"\r")
             send(b"\r", 0.8)
+            if byte_mode:
+                rows = [row for row in screen.text().splitlines() if "huge.log" in row]
+                assert rows and "TB" in rows[0] and "184467440737" not in rows[0], screen.text()
+                send(b"\x1b[21~")
+                wait_for_exit(pid, "HTTP byte-mode metadata")
+                exited = True
+                return
             rows = [row for row in screen.text().splitlines() if "foo.txt" in row]
             assert rows and "123 B" in rows[0] and "2026-09-14 18:45" in rows[0], screen.text()
             rows = [row for row in screen.text().splitlines() if "bar.log" in row]
-            assert rows and "~14 KB" in rows[0], screen.text()
+            assert rows and "14 KB" in rows[0] and "~14 KB" not in rows[0], screen.text()
+            for name, size in (("medium.log", "2.5 MB"), ("large.log", "8.0 GB"), ("zero.log", "0 B"), ("unknown.log", "-"), ("sub/", "<DIR>")):
+                rows = [row for row in screen.text().splitlines() if name in row]
+                assert rows and size in rows[0], screen.text()
             send(b"\x1b[21~")
             wait_for_exit(pid, "HTTP panel metadata")
             exited = True
@@ -156,11 +177,14 @@ def main():
         if len(sys.argv) > 2:
             panel_metadata(sys.argv[2], f"http://127.0.0.1:{server.server_port}/panel/")
             assert Handler.heads == 0 and Handler.gets == 12
-            cancel_repository(sys.argv[2], f"http://127.0.0.1:{server.server_port}/slow/")
+            panel_metadata(sys.argv[2], f"http://127.0.0.1:{server.server_port}/panel/", byte_mode=True)
             assert Handler.heads == 0 and Handler.gets == 13
+            cancel_repository(sys.argv[2], f"http://127.0.0.1:{server.server_port}/slow/")
+            assert Handler.heads == 0 and Handler.gets == 14
         subprocess.run([sys.argv[1], f"http://127.0.0.1:{server.server_port}/stat/", "stat"],
                        check=True, timeout=30)
         assert Handler.heads == 3
+        print(f"Request counts: {Handler.gets} listing GETs, 0 browsing HEADs, 3 explicit-stat HEADs")
     finally:
         server.shutdown()
         server.server_close()
