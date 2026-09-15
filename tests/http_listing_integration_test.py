@@ -175,14 +175,15 @@ def main():
             url = f"http://127.0.0.1:{server.server_port}/{mode}/"
             subprocess.run([sys.argv[1], url, mode], check=True, timeout=30)
         assert Handler.heads == 0, "directory browsing issued per-entry HEAD requests"
-        assert Handler.gets == 11, f"unexpected listing GET count: {Handler.gets}"
+        # The out-of-root redirect is now rejected before its GET is sent.
+        assert Handler.gets == 10, f"unexpected listing GET count: {Handler.gets}"
         if len(sys.argv) > 2:
             panel_metadata(sys.argv[2], f"http://127.0.0.1:{server.server_port}/panel/")
-            assert Handler.heads == 0 and Handler.gets == 12
+            assert Handler.heads == 0 and Handler.gets == 11
             panel_metadata(sys.argv[2], f"http://127.0.0.1:{server.server_port}/panel/", byte_mode=True)
-            assert Handler.heads == 0 and Handler.gets == 13
+            assert Handler.heads == 0 and Handler.gets == 12
             cancel_repository(sys.argv[2], f"http://127.0.0.1:{server.server_port}/slow/")
-            assert Handler.heads == 0 and Handler.gets == 14
+            assert Handler.heads == 0 and Handler.gets == 13
         subprocess.run([sys.argv[1], f"http://127.0.0.1:{server.server_port}/stat/", "stat"],
                        check=True, timeout=30)
         assert Handler.heads == 3

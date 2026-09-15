@@ -638,14 +638,14 @@ static void command_open_location(NavApp *app)
     nav_http_provider_configure(provider, &app->config);
     if (owned && !strcmp(provider->scheme, "http") && !directory) {
         NavEntry metadata;
-        int probe = provider->stat(provider, resource.resource_id, &metadata, error, sizeof error);
-        if (probe && app->credential_store && nav_credential_store_is_locked(app->credential_store)) {
-            if (nav_ui_confirm("Open Vault to unlock HTTP credentials?", draw_app, app)) {
-                command_vault(app);
-                probe = provider->stat(provider, resource.resource_id, &metadata, error, sizeof error);
-            }
-        }
-        if (probe && (strstr(error, "401") || strstr(error, "403") || strstr(error, "locked"))) {
+        NavHttpAuthAttempts attempts = {0};
+        int probe;
+        do {
+            error[0] = 0;
+            probe = provider->stat(provider, resource.resource_id, &metadata, error, sizeof error);
+        } while (probe && nav_ui_http_auth_retry(app, &provider, &owned, resource.resource_id,
+                                                &attempts, error, draw_app, app));
+        if (probe && (nav_http_authentication_needed(provider) || strstr(error, "403"))) {
             set_error(app, error); nav_provider_destroy(provider); return;
         }
         if (!probe) {
@@ -664,7 +664,7 @@ static void command_open_location(NavApp *app)
                 set_error(app, error); if (owned) nav_provider_destroy(provider); return;
             }
         }
-        if (action == 1) nav_ui_download(provider, &resource, &origin, &app->config, draw_app, app);
+        if (action == 1) nav_ui_download(app, provider, &resource, &origin, &app->config, draw_app, app);
         else if (nav_ui_viewer_open(app, provider, &resource, owned, draw_app, app)) owned = false;
         if (owned) nav_provider_destroy(provider);
         if (action == 1) refresh_pane(app, pane);
@@ -821,17 +821,29 @@ static bool prompt_repository(NavApp *app, NavRepository *repository, int except
 static void command_repository_add(NavApp *app)
 {
     NavRepository repository = {.tls_verify = true};
+    nav_ui_repository_add_prefilled(app, &repository, NULL);
+}
+
+bool nav_ui_repository_add_prefilled(NavApp *app, NavRepository *repository, const char *resource)
+{
     char error[256] = {0};
     if (app->config.repository_count == NAV_REPOSITORY_MAX) {
-        set_warning(app, "Repository limit reached");
-        return;
+        set_warning(app, "Repository limit reached"); return false;
     }
-    if (!prompt_repository(app, &repository, -1)) return;
-    app->config.repositories[app->config.repository_count++] = repository;
+    if (!prompt_repository(app, repository, -1)) return false;
+    if (resource) {
+        char root[NAV_URL_MAX];
+        if (!repository->credential[0] || nav_http_scope_normalize(repository->url, resource,
+                root, sizeof root, error, sizeof error)) {
+            set_error(app, error[0] ? error : "Select a credential for the repository"); return false;
+        }
+        snprintf(repository->url, sizeof repository->url, "%s", root);
+    }
+    app->config.repositories[app->config.repository_count++] = *repository;
     if (nav_config_save_repositories(&app->config, error, sizeof error)) {
-        app->config.repository_count--;
-        set_error(app, error);
-    } else set_notice(app, "Repository added");
+        app->config.repository_count--; set_error(app, error); return false;
+    }
+    set_notice(app, "Repository added"); return true;
 }
 
 static void command_repository_edit(NavApp *app)
@@ -955,14 +967,10 @@ done:
 
 static void vault_unlock(VaultScreen *screen)
 {
-    char password[1024] = {0}, error[256];
-    if (!nav_ui_prompt_secret(" Unlock Vault ", "Master password: ", password,
-                              sizeof password, draw_vault, screen)) {
-        if (nav_credential_store_unlock(screen->app->credential_store, password,
-                                        error, sizeof error)) set_error(screen->app, error);
-        else set_notice(screen->app, "Vault unlocked");
-    }
-    wipe_text(password, sizeof password);
+    char error[256];
+    int result = nav_ui_unlock_vault(screen->app->credential_store, error, sizeof error, draw_vault, screen);
+    if (result < 0) set_error(screen->app, error);
+    else if (result > 0) set_notice(screen->app, "Vault unlocked");
 }
 
 static bool vault_prompt_secret(VaultScreen *screen, const char *label,
@@ -1464,7 +1472,7 @@ static void dispatch(NavApp *app, NavCommand command)
         const NavEntry *entry = nav_pane_selected(pane);
         if (entry && !(entry->flags & NAV_ENTRY_DIR)) {
             NavLocation origin = pane->location;
-            nav_ui_download(pane->provider, entry, &origin, &app->config, draw_app, app);
+            nav_ui_download(app, pane->provider, entry, &origin, &app->config, draw_app, app);
             refresh_pane(app, pane);
         }
         break;

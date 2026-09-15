@@ -124,7 +124,10 @@ def main():
             location(session, str(left))
             location(session, origin + "/directory"); assert "file.log" in session.text(), session.text()
             location(session, str(left))
-            location(session, origin + "/401"); assert "authentication" in session.text(), session.text()
+            location(session, origin + "/401")
+            assert "Authentication Required" in session.text(), session.text()
+            session.send(ESC)  # no Vault in this fixture; dismiss setup guidance
+            assert "authentication" in session.text(), session.text()
             location(session, origin + "/directory/file.log")
             assert "direct URL log content" in session.text(), session.text()
             session.send(b"\x1bd")

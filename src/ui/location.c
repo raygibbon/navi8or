@@ -98,7 +98,7 @@ static bool download_cancel(void *data)
     return nav_input_resolve(&screen->input, nav_ui_keymap(), NAV_CONTEXT_DIALOG, &event).command == NAV_CMD_CANCEL;
 }
 
-int nav_ui_download(NavProvider *source, const NavEntry *entry,
+int nav_ui_download(NavApp *app, NavProvider *source, const NavEntry *entry,
                     const NavLocation *origin, const NavConfig *config,
                     NavUiRedrawFn redraw, void *data)
 {
@@ -124,9 +124,20 @@ int nav_ui_download(NavProvider *source, const NavEntry *entry,
         overwrite = true;
     }
     DownloadScreen screen = {.redraw = redraw, .data = data, .name = name};
-    int result = nav_download_copy(source, entry->resource_id, destination, target.resource_id,
-                                   overwrite, config->transfer_buffer_size, download_progress,
-                                   download_cancel, &screen, error, sizeof error);
+    NavProvider *request = source; bool owned = false;
+    NavHttpAuthAttempts attempts = {0};
+    int result; bool auth_cancelled = false;
+    for (;;) {
+        error[0] = 0;
+        result = nav_download_copy(request, entry->resource_id, destination, target.resource_id,
+                                  overwrite, config->transfer_buffer_size, download_progress,
+                                  download_cancel, &screen, error, sizeof error);
+        if (!result || !nav_http_authentication_needed(request)) break;
+        if (!nav_ui_http_auth_retry(app, &request, &owned, entry->resource_id,
+                                    &attempts, error, redraw, data)) { auth_cancelled = true; break; }
+    }
+    if (owned) nav_provider_destroy(request);
+    if (auth_cancelled) return 0;
     const char *lines[] = {result ? error : "Download complete"};
     nav_ui_info(result ? " Download Error " : " Download ", lines, 1);
     return result ? -1 : 1;

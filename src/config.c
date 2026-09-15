@@ -153,6 +153,14 @@ int nav_config_validate(const NavConfig *config, char *error, size_t error_size)
         snprintf(error, error_size, "too many repositories");
         return -1;
     }
+    if (config->auth_scope_count > NAV_AUTH_SCOPE_MAX) {
+        snprintf(error, error_size, "too many HTTP authentication scopes"); return -1;
+    }
+    for (size_t i = 0; i < config->auth_scope_count; i++) {
+        NavRepository scope = config->auth_scopes[i];
+        snprintf(scope.name, sizeof scope.name, "HTTP authentication scope");
+        if (!scope.credential[0] || validate_repository(&scope, error, error_size)) return -1;
+    }
     for (size_t index = 0; index < config->repository_count; index++) {
         if (validate_repository(&config->repositories[index], error, error_size))
             return -1;
@@ -329,6 +337,14 @@ int nav_config_save_repositories(const NavConfig *config, char *error,
                     repository->rename_enabled ? "true" : "false") < 0)
             goto write_failed;
     }
+    for (size_t i = 0; i < config->auth_scope_count; i++) {
+        const NavRepository *scope = &config->auth_scopes[i];
+        if (fputs("\n[[http_auth_scopes]]\nurl = ", file) == EOF ||
+            write_toml_string(file, scope->url) ||
+            fputs("\ncredential = ", file) == EOF || write_toml_string(file, scope->credential) ||
+            fprintf(file, "\ntls_verify = %s\n", scope->tls_verify ? "true" : "false") < 0)
+            goto write_failed;
+    }
     bool failed = fflush(file) != 0;
     if (!failed && nav_platform_sync(descriptor)) failed = true;
     if (fclose(file)) failed = true;
@@ -446,6 +462,29 @@ static void load_repositories(NavConfig *config, const char *directory)
         snprintf(warning, sizeof warning, "repositories.toml: %.210s", parse_error);
         config_warning(config, warning);
         return;
+    }
+    array = toml_array_in(root, "http_auth_scopes");
+    if (toml_key_exists(root, "http_auth_scopes") && (!array || toml_array_kind(array) != 't'))
+        config_warning(config, "http_auth_scopes must be an array of tables");
+    else if (array) for (int i = 0; i < toml_array_nelem(array); i++) {
+        toml_table_t *table = toml_table_at(array, i);
+        NavRepository scope = {.tls_verify = true}; char validation[192] = {0};
+        snprintf(scope.name, sizeof scope.name, "HTTP authentication scope");
+        bool valid = table && read_string(table, "url", scope.url, sizeof scope.url) &&
+            read_string(table, "credential", scope.credential, sizeof scope.credential) && scope.credential[0] &&
+            (!toml_key_exists(table, "tls_verify") || read_bool(table, "tls_verify", &scope.tls_verify));
+        /* Reject secret-bearing/unknown keys rather than retaining them. */
+        if (table) for (int k = 0; toml_key_in(table, k); k++) {
+            const char *key = toml_key_in(table, k);
+            if (strcmp(key, "url") && strcmp(key, "credential") && strcmp(key, "tls_verify")) valid = false;
+        }
+        if (!valid || validate_repository(&scope, validation, sizeof validation)) {
+            config_warning(config, "Invalid HTTP authentication scope (URL/credential reference/TLS only)"); continue;
+        }
+        if (config->auth_scope_count == NAV_AUTH_SCOPE_MAX) {
+            config_warning(config, "additional HTTP authentication scopes were ignored"); break;
+        }
+        config->auth_scopes[config->auth_scope_count++] = scope;
     }
     array = toml_array_in(root, "repositories");
     if (!array) {

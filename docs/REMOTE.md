@@ -39,11 +39,61 @@ directories. Slashless HTML without that redirect is a resource.
 Resource queries are retained; fragments discarded; directory queries unsupported.
 Embedded URL credentials are rejected. Local file paths also open Viewer.
 
-Longest matching saved HTTP root supplies auth/TLS, with canonical boundaries
-and traversal checks. Unmatched URLs use anonymous origin-scoped providers;
-redirects outside the selected root are rejected. No cookies/SSO or cross-root
-credential reuse. Locked credentials require Vault unlock/retry; 401/403 errors
-do not print secrets.
+Direct HTTP resources resolve an operation's explicit credential first, then
+the longest matching saved repository credential, then the longest matching
+HTTP authentication scope, then anonymous access. Matching uses canonical
+scheme/host/effective-port and path boundaries, including encoded traversal
+checks. A link never inherits the originating repository's credential merely
+because its hostname matches. Repository/auth-scope TLS settings and the normal
+System/No Proxy configuration still apply.
+
+### Authentication Required
+
+A 401 from Ctrl+L, Viewer/link View or Download opens the shared authentication
+dialog. Locked configured credentials use the same flow. Enter on Credential
+opens the compatible Basic/Bearer vault-name picker, or the normal masked master
+password prompt when locked. Unlock returns to the operation, not a Vault menu.
+No password is cached separately. Up/Down or Tab moves fields; Enter selects or
+retries; Left/Right chooses Retry/Cancel; Esc cancels. A missing vault/compatible
+credential is reported; create credentials through the existing Vault first.
+
+Scope choices:
+
+- **Use once** (default): the selected credential is bound to this exact URL and
+  operation. No config is written. Viewer range/cache reads for that resource
+  retain it, but following another link resolves independently.
+- **Remember URL root**: edit the proposed parent URL, then confirm the canonical
+  root before saving and retrying. Only same-origin parent directory prefixes
+  are accepted; an origin-wide root must be explicitly entered and confirmed.
+- **Add as Repository**: reuse the normal repository form with parent URL,
+  selected credential and TLS setting prefilled. Saving retries the original
+  resource without navigating away. The edited root must still contain it.
+
+Remembered rules share repositories.toml, but do not appear as browsable repos:
+
+```toml
+[[http_auth_scopes]]
+url = "https://example.com/logs/"
+credential = "Work HTTP"
+tls_verify = true
+```
+
+Only URL, vault reference and TLS verification are saved; secrets remain in the
+vault. Remove/edit rules in repositories.toml and reload/restart to manage them.
+Repository credentials take precedence over rules; a matching repository with
+no credential can fall back to a rule. Failed names are marked already attempted;
+retrying one requires manual confirmation, and another compatible credential can
+be chosen. Ordinary 403 is reported as forbidden, never an automatic chooser loop.
+Retry retains Viewer/history/fullscreen/pane and the confirmed download destination.
+
+Redirects outside the provider root, or to any different URL during Use once,
+are rejected before sending HTTP headers. Streaming redirects are also checked
+before following. Unrestricted authentication forwarding is never enabled;
+an out-of-scope redirect must be opened explicitly as a separate operation.
+Open in Browser bypasses all this: the browser receives only the URL, never a
+vault credential/header. Existing HTTPS-only credential transport remains; HTTP
+URLs can be anonymous but cannot send Basic/Bearer secrets. No OAuth, cookies,
+SSO, NTLM or browser-session import is implemented.
 
 Download and Viewer Save Copy share editable Destination/Filename confirmation.
 The default is the launching pane directory: choose a writable local destination

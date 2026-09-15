@@ -18,6 +18,7 @@
 #define NAV_REPOSITORY_MAX 32
 #define NAV_REPO_NAME_MAX 96
 #define NAV_URL_MAX 2048
+#define NAV_AUTH_SCOPE_MAX 64
 #define NAV_TRANSFER_BUFFER_MIN (64u * 1024u)
 #define NAV_TRANSFER_BUFFER_MAX (64u * 1024u * 1024u)
 enum
@@ -109,6 +110,9 @@ typedef struct
     size_t history_max_entries;
     char theme_name[64];
     char warning[256];
+    /* Only public references/settings; secrets remain in the encrypted vault. */
+    NavRepository auth_scopes[NAV_AUTH_SCOPE_MAX];
+    size_t auth_scope_count;
     NavRepository repositories[NAV_REPOSITORY_MAX];
     size_t repository_count;
 } NavConfig;
@@ -260,6 +264,14 @@ int nav_config_load(NavConfig *, char *, size_t);
 int nav_config_validate(const NavConfig *, char *, size_t);
 int nav_config_write_defaults(char *, size_t);
 int nav_config_save_repositories(const NavConfig *, char *, size_t);
+int nav_http_scope_normalize(const char *, const char *, char *, size_t, char *, size_t);
+int nav_http_scope_suggest(const char *, char *, size_t);
+int nav_http_auth_scope_remember(NavConfig *, const NavRepository *, const char *, char *, size_t);
+bool nav_http_authentication_needed(const NavProvider *);
+unsigned nav_http_authentication_types(const NavProvider *);
+const char *nav_http_credential_name(const NavProvider *);
+NavProvider *nav_http_authentication_retry_provider(NavProvider *, NavCredentialStore *, const char *, const char *, const NavRepository *, char *, size_t);
+void nav_http_provider_settings(const NavProvider *, NavRepository *);
 int nav_config_save_settings(const NavConfig *, char *, size_t);
 /* Operational document validation without treating it as a UI profile. */
 int nav_config_load_operational_file(NavConfig *, const char *, char *, size_t);

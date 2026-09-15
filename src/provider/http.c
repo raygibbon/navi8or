@@ -21,7 +21,55 @@ typedef struct
     NavCredentialStore *credential_store;
     bool tls_verify;
     const NavConfig *config;
+    char once_url[NAV_URL_MAX];
+    long authentication_status;
+    unsigned authentication_types;
+    bool authentication_locked;
+    bool scope_rejected;
 } HttpProvider;
+
+bool nav_http_authentication_needed(const NavProvider *provider)
+{
+    if (!provider || strcmp(provider->scheme, "http")) return false;
+    const HttpProvider *http = provider->context;
+    return http->authentication_status == 401 || http->authentication_locked;
+}
+unsigned nav_http_authentication_types(const NavProvider *provider)
+{
+    if (!provider || strcmp(provider->scheme, "http")) return 0;
+    return ((HttpProvider *)provider->context)->authentication_types;
+}
+const char *nav_http_credential_name(const NavProvider *provider)
+{
+    return provider && !strcmp(provider->scheme, "http") ?
+        ((HttpProvider *)provider->context)->credential_name : "";
+}
+void nav_http_provider_settings(const NavProvider *provider, NavRepository *repository)
+{
+    memset(repository, 0, sizeof *repository);
+    if (!provider || strcmp(provider->scheme, "http")) return;
+    const HttpProvider *http = provider->context;
+    snprintf(repository->name, sizeof repository->name, "%s", http->name);
+    snprintf(repository->url, sizeof repository->url, "%s", http->root);
+    snprintf(repository->credential, sizeof repository->credential, "%s", http->credential_name);
+    repository->tls_verify = http->tls_verify;
+}
+NavProvider *nav_http_authentication_retry_provider(NavProvider *provider,
+    NavCredentialStore *store, const char *url, const char *name, const NavRepository *settings, char *error, size_t size)
+{
+    NavRepository repository;
+    nav_http_provider_settings(provider, &repository);
+    if (settings) repository = *settings;
+    if (!repository.url[0] || !name[0] || strlen(url) >= NAV_URL_MAX) return NULL;
+    snprintf(repository.credential, sizeof repository.credential, "%s", name);
+    NavProvider *retry = nav_http_provider_create(&repository, store, error, size);
+    if (retry) {
+        HttpProvider *http = retry->context;
+        snprintf(http->once_url, sizeof http->once_url, "%s", url);
+        nav_http_provider_configure(retry, ((HttpProvider *)provider->context)->config);
+    }
+    return retry;
+}
 
 void nav_http_provider_configure(NavProvider *provider, const NavConfig *config)
 {
@@ -149,19 +197,23 @@ static int listing_append(NavListing *listing, const NavEntry *entry)
 
 static bool url_is_within_root(const HttpProvider *http, const char *url)
 {
+    if (http->once_url[0] && strcmp(url, http->once_url)) return false;
     size_t length = strlen(http->root);
     char *decoded_root, *decoded_url;
     bool within;
     if (strncmp(url, http->root, length)) return false;
-    decoded_root = curl_easy_unescape(http->easy, http->root, 0, NULL);
-    decoded_url = curl_easy_unescape(http->easy, url, 0, NULL);
+    int root_bytes = 0, url_bytes = 0;
+    decoded_root = curl_easy_unescape(http->easy, http->root, 0, &root_bytes);
+    decoded_url = curl_easy_unescape(http->easy, url, 0, &url_bytes);
     if (!decoded_root || !decoded_url) {
         curl_free(decoded_root);
         curl_free(decoded_url);
         return false;
     }
     size_t decoded_length = strlen(decoded_url);
-    within = !strncmp(decoded_url, decoded_root, strlen(decoded_root)) &&
+    within = (size_t)root_bytes == strlen(decoded_root) && (size_t)url_bytes == decoded_length &&
+             !strchr(decoded_url, '\\') && strcspn(decoded_url, "\r\n\t") == decoded_length &&
+             !strncmp(decoded_url, decoded_root, strlen(decoded_root)) &&
              !strstr(decoded_url, "/../") && !strstr(decoded_url, "/./") &&
              !(decoded_length >= 3 &&
                !strcmp(decoded_url + decoded_length - 3, "/..")) &&
@@ -206,6 +258,30 @@ static int resolve_url(const char *base, const char *reference, char *output,
     return 0;
 }
 
+#if LIBCURL_VERSION_NUM >= 0x075000 /* 7.80: includes Ubuntu 22.04 baseline. */
+static int request_scope_guard(void *data, char *remote, char *local, int remote_port, int local_port)
+{
+    CURL *easy = data; HttpProvider *http = NULL; char *target = NULL;
+    (void)remote; (void)local; (void)remote_port; (void)local_port;
+    curl_easy_getinfo(easy, CURLINFO_PRIVATE, &http);
+    curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &target);
+    /* Run BEFORE every request, including redirects, rather than discovering
+     * a leaked credential by inspecting the final URL afterwards. */
+    if (http && target && url_is_within_root(http, target)) return CURL_PREREQFUNC_OK;
+    if (http) http->scope_rejected = true;
+    return CURL_PREREQFUNC_ABORT;
+}
+#endif
+
+static void record_authentication(HttpProvider *http, CURL *easy)
+{
+    long available = 0;
+    curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &http->authentication_status);
+    curl_easy_getinfo(easy, CURLINFO_HTTPAUTH_AVAIL, &available);
+    http->authentication_types = available ?
+        ((available & CURLAUTH_BASIC ? 1u : 0u) | (available & CURLAUTH_BEARER ? 2u : 0u)) : 3u;
+}
+
 static int configure_request(HttpProvider *http, CURL *easy,
                              const char *resource_id,
                              NavResolvedCredential *credential,
@@ -213,6 +289,13 @@ static int configure_request(HttpProvider *http, CURL *easy,
 {
     CURLcode code;
     memset(credential, 0, sizeof *credential);
+    http->authentication_status = 0;
+    http->scope_rejected = false;
+    http->authentication_locked = false;
+    http->authentication_types = 3;
+    if (!url_is_within_root(http, resource_id)) {
+        snprintf(error, error_size, "HTTP request left credential scope"); return -1;
+    }
     /* Empty explicitly bypasses environment proxies. NULL restores libcurl's
      * default discovery, including NO_PROXY; never mutate the environment. */
     code = curl_easy_setopt(easy, CURLOPT_PROXY,
@@ -223,6 +306,15 @@ static int configure_request(HttpProvider *http, CURL *easy,
     }
     curl_easy_setopt(easy, CURLOPT_URL, resource_id);
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(easy, CURLOPT_UNRESTRICTED_AUTH, 0L);
+#if LIBCURL_VERSION_NUM >= 0x075000
+    curl_easy_setopt(easy, CURLOPT_PRIVATE, http);
+    curl_easy_setopt(easy, CURLOPT_PREREQFUNCTION, request_scope_guard);
+    curl_easy_setopt(easy, CURLOPT_PREREQDATA, easy);
+#else
+    /* Old libcurl cannot guard in-root path redirects before sending auth. */
+    curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
+#endif
     curl_easy_setopt(easy, CURLOPT_MAXREDIRS, HTTP_REDIRECT_LIMIT);
     curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 3L);
     curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
@@ -248,6 +340,7 @@ static int configure_request(HttpProvider *http, CURL *easy,
         return -1;
     }
     if (nav_credential_store_is_locked(http->credential_store)) {
+        http->authentication_locked = true;
         snprintf(error, error_size, "credential store is locked");
         return -1;
     }
@@ -284,9 +377,10 @@ static int configure_request(HttpProvider *http, CURL *easy,
     return 0;
 }
 
-static bool authentication_status_error(const HttpProvider *http, long status,
+static bool authentication_status_error(HttpProvider *http, long status,
                                         char *error, size_t error_size)
 {
+    http->authentication_status = status;
     if (status == 401) {
         snprintf(error, error_size, "%s",
                  http->credential_name[0]
@@ -1062,6 +1156,7 @@ static void read_completion(HttpRead *read)
         if (message->msg == CURLMSG_DONE) {
             read->complete = true;
             read->result = message->data.result;
+            record_authentication(read->provider, read->easy);
         }
 }
 
@@ -1536,6 +1631,7 @@ static int http_mutation(NavProvider *provider, const char *resource_id,
     curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, curl_error);
     code = curl_easy_perform(easy);
     curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+    record_authentication(http, easy);
     curl_easy_cleanup(easy);
     nav_resolved_credential_free(&credential);
     if (code != CURLE_OK) {
@@ -1618,6 +1714,7 @@ static int http_rename(NavProvider *provider, const char *source,
     curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, curl_error);
     code = curl_easy_perform(easy);
     curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+    record_authentication(http, easy);
     if (code != CURLE_OK) {
         snprintf(error, error_size, "HTTP MOVE failed: %s",
                  curl_error[0] ? curl_error : curl_easy_strerror(code));
@@ -1720,9 +1817,12 @@ static int http_read_at(NavProvider *provider, const char *resource_id,
     curl_easy_setopt(easy, CURLOPT_HEADERDATA, &response);
     code = curl_easy_perform(easy);
     curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &effective);
+    record_authentication(http, easy);
     curl_easy_getinfo(easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &content_length);
     if (code != CURLE_OK) {
-        if (response.status == 200 && response.exceeded)
+        if (http->scope_rejected)
+            snprintf(error, error_size, "HTTP redirect left repository root/credential scope");
+        else if (response.status == 200 && response.exceeded)
             snprintf(error, error_size,
                      "server does not support bounded Range viewing");
         else
@@ -1817,11 +1917,14 @@ static int http_stat(NavProvider *provider, const char *resource_id,
     curl_easy_setopt(easy, CURLOPT_HEADERDATA, &date);
     code = curl_easy_perform(easy);
     curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+    record_authentication(http, easy);
     curl_easy_getinfo(easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &length);
     curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &effective);
     if (code != CURLE_OK || status < 200 || status >= 300 || !effective ||
         !url_is_within_root(http, effective)) {
-        if (code != CURLE_OK)
+        if (http->scope_rejected)
+            snprintf(error, error_size, "HTTP redirect left repository root/credential scope");
+        else if (code != CURLE_OK)
             snprintf(error, error_size, "HTTP metadata failed: %s",
                      curl_easy_strerror(code));
         else if (!authentication_status_error(http, status,
@@ -1882,10 +1985,15 @@ static int http_list_progress(NavProvider *provider, const char *resource_id, bo
     curl_easy_setopt(http->easy, CURLOPT_XFERINFODATA, &parser);
     curl_easy_setopt(http->easy, CURLOPT_TIMEOUT, 10L);
     code = curl_easy_perform(http->easy);
+    record_authentication(http, http->easy);
     curl_easy_getinfo(http->easy, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_getinfo(http->easy, CURLINFO_EFFECTIVE_URL, &effective);
     if (parser.memory_error || parser.oversized || parser.outside_root) {
         listing_error(&parser, error, error_size);
+        goto finish;
+    }
+    if (http->scope_rejected) {
+        snprintf(error, error_size, "HTTP redirect left repository root/credential scope");
         goto finish;
     }
     if (code != CURLE_OK) {

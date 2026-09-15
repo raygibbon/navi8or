@@ -1026,11 +1026,10 @@ def run_cross_origin_redirect_test(executable, certificate, key):
         subprocess.run([executable, url, "0", "1", "0", "basic",
                         "testpass", "redirect"], check=True,
                        timeout=30)
-        if not sink_handler.requests:
-            raise RuntimeError("cross-origin redirect did not reach sink")
-        if any(request["authorization_sha256"] is not None
-               for request in sink_handler.requests):
-            raise RuntimeError("credential leaked across redirect origin")
+        # Scoped requests now stop before the redirected HTTP request, rather
+        # than depending only on libcurl stripping auth at the other origin.
+        if sink_handler.requests:
+            raise RuntimeError("out-of-scope redirect reached sink")
     finally:
         DirectoryHandler.root_redirect = None
         for server in (origin, sink):

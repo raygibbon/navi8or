@@ -375,16 +375,25 @@ static void goto_prompt(ViewerScreen *screen)
 static void viewer_help(void)
 { nav_ui_binding_help(NAV_CONTEXT_VIEWER); }
 
-static NavViewSource *viewer_source(NavProvider *provider, const NavEntry *entry,
+static NavViewSource *viewer_source(NavApp *app, NavProvider **provider, bool *owned, const NavEntry *entry,
                                     const NavLocation *origin, const NavConfig *config,
                                     NavUiRedrawFn redraw, void *data)
 {
     char error[256] = {0}; bool binary = false;
-    NavViewSource *source = nav_view_source_open_provider(provider, entry->resource_id, &binary, error, sizeof error);
+    NavHttpAuthAttempts attempts = {0};
+    NavViewSource *source;
+retry:
+    error[0] = 0; binary = false;
+    source = nav_view_source_open_provider(*provider, entry->resource_id, &binary, error, sizeof error);
     if (!source) {
+        if (!binary && nav_http_authentication_needed(*provider)) {
+            if (nav_ui_http_auth_retry(app, provider, owned, entry->resource_id,
+                                      &attempts, error, redraw, data)) goto retry;
+            return NULL;  /* Cancel returns directly to the unchanged Viewer. */
+        }
         if (binary) {
             if (origin && nav_ui_confirm("This resource does not appear to be text. Download it instead?", redraw, data))
-                nav_ui_download(provider, entry, origin, config, redraw, data);
+                nav_ui_download(app, *provider, entry, origin, config, redraw, data);
             else if (!origin) { const char *lines[] = {"This resource does not appear to be text."}; nav_ui_info(" Viewer ", lines, 1); }
         } else { const char *lines[] = {error[0] ? error : "Unable to open resource"}; nav_ui_info(" Viewer Error ", lines, 1); }
         return NULL;
@@ -394,6 +403,13 @@ static NavViewSource *viewer_source(NavProvider *provider, const NavEntry *entry
         source->cursor_top(source, &first);
         if (!source->cursor_line(source, &first, &ignored)) {
             const char *message = source->last_error(source);
+            snprintf(error, sizeof error, "%s", message && message[0] ? message : "Unable to read remote line");
+            if (nav_http_authentication_needed(*provider)) {
+                source->close(source);
+                if (nav_ui_http_auth_retry(app, provider, owned, entry->resource_id,
+                                           &attempts, error, redraw, data)) goto retry;
+                return NULL;
+            }
             const char *lines[] = {message && message[0] ? message : "Unable to read remote line"};
             nav_ui_info(" Viewer Error ", lines, 1); source->close(source); return NULL;
         }
@@ -416,9 +432,9 @@ static void viewer_follow(ViewerScreen *screen, const char *url, bool download)
     if (!provider) { const char *lines[] = {error}; nav_ui_info(" Open Link ", lines, 1); return; }
     /* Explicit View is resource intent, including URLs ending in '/'. */
     entry.flags &= ~NAV_ENTRY_DIR;
-    if (download) nav_ui_download(provider, &entry, screen->origin, screen->config, draw_viewer, screen);
+    if (download) nav_ui_download(screen->app, provider, &entry, screen->origin, screen->config, draw_viewer, screen);
     else {
-        NavViewSource *source = viewer_source(provider, &entry, screen->origin, screen->config, draw_viewer, screen);
+        NavViewSource *source = viewer_source(screen->app, &provider, &owned, &entry, screen->origin, screen->config, draw_viewer, screen);
         if (source) {
             if (screen->history_count == sizeof screen->history / sizeof *screen->history) {
                 viewer_release(&screen->history[0].viewer, screen->history[0].provider, screen->history[0].owned);
@@ -512,7 +528,7 @@ static bool viewer_dispatch(ViewerScreen *screen, NavCommand command)
         } else snprintf(screen->viewer.status, sizeof screen->viewer.status, "No Viewer history");
         break;
     case NAV_CMD_DOWNLOAD:
-        if (screen->origin) nav_ui_download(screen->provider, screen->entry, screen->origin, screen->config, draw_viewer, screen);
+        if (screen->origin) nav_ui_download(screen->app, screen->provider, screen->entry, screen->origin, screen->config, draw_viewer, screen);
         break;
     case NAV_CMD_UP: nav_viewer_move(&screen->viewer, -1, page); break;
     case NAV_CMD_DOWN: nav_viewer_move(&screen->viewer, 1, page); break;
@@ -575,14 +591,17 @@ int nav_ui_viewer_open(NavApp *app, NavProvider *provider, const NavEntry *entry
 {
     NavPane *pane = &app->panes[app->active];
     const NavConfig *config = &app->config;
-    NavViewSource *source = viewer_source(provider, entry, &pane->location, config, redraw, data);
-    if (!source) return 0;
+    NavProvider *request = provider; bool request_owned = false;
+    NavViewSource *source = viewer_source(app, &request, &request_owned, entry, &pane->location, config, redraw, data);
+    if (!source) { if (request_owned) nav_provider_destroy(request); return 0; }
     ViewerScreen *screen = calloc(1, sizeof *screen);
     if (!screen) {
-        source->close(source); const char *lines[] = {"Out of memory creating pane Viewer"};
+        source->close(source); if (request_owned) nav_provider_destroy(request);
+        const char *lines[] = {"Out of memory creating pane Viewer"};
         nav_ui_info(" Viewer Error ", lines, 1); return 0;
     }
-    screen->provider = provider; screen->owned = owned;
+    if (request != provider && owned) nav_provider_destroy(provider);
+    screen->provider = request; screen->owned = owned || request_owned;
     screen->resource = *entry; screen->entry = &screen->resource;
     screen->launch_location = pane->location; screen->origin = &screen->launch_location;
     screen->config = config; screen->highlight_current = config->viewer_current_line;

@@ -8,6 +8,22 @@
 
 static int canonical_url(const char *input, char *out, size_t size)
 {
+    /* Validate before URL parsers normalize dot segments: an encoded parent
+     * must not turn a proposed narrow rule into an origin-wide credential. */
+    for (const unsigned char *c = (const unsigned char *)input; *c; c++) {
+        if (isspace(*c) || iscntrl(*c)) return -1;
+        if (*c == '%' && (!c[1] || !c[2] || !isxdigit(c[1]) || !isxdigit(c[2]))) return -1;
+    }
+    int bytes = 0;
+    char *decoded = curl_easy_unescape(NULL, input, 0, &bytes);
+    if (!decoded) return -1;
+    size_t length = strlen(decoded);
+    bool safe = length == (size_t)bytes && !strchr(decoded, '\\') &&
+        strcspn(decoded, "\r\n\t") == length && !strstr(decoded, "/../") && !strstr(decoded, "/./") &&
+        !(length >= 3 && !strcmp(decoded + length - 3, "/..")) &&
+        !(length >= 2 && !strcmp(decoded + length - 2, "/."));
+    curl_free(decoded);
+    if (!safe) return -1;
     CURLU *url = curl_url();
     char *text = NULL, *scheme = NULL, *user = NULL, *host = NULL;
     int result = -1;
@@ -29,6 +45,64 @@ static int canonical_url(const char *input, char *out, size_t size)
 done:
     curl_free(text); curl_free(scheme); curl_free(user); curl_free(host); curl_url_cleanup(url);
     return result;
+}
+
+int nav_http_scope_suggest(const char *input, char *out, size_t size)
+{
+    char url[NAV_URL_MAX];
+    if (canonical_url(input, url, sizeof url)) return -1;
+    char *query = strchr(url, '?'); if (query) *query = 0;
+    char *leaf = strrchr(url, '/');
+    if (!leaf || leaf < strstr(url, "://") + 3) return -1;
+    leaf[1] = 0;
+    if (strlen(url) >= size) return -1;
+    snprintf(out, size, "%s", url); return 0;
+}
+
+int nav_http_scope_normalize(const char *input, const char *resource,
+                             char *out, size_t size, char *error, size_t error_size)
+{
+    char root[NAV_URL_MAX], url[NAV_URL_MAX];
+    NavRepository repository = {.tls_verify = true};
+    snprintf(repository.name, sizeof repository.name, "HTTP authentication scope");
+    if (strchr(input, '?') || strchr(input, '#') ||
+        canonical_url(input, root, sizeof root) || canonical_url(resource, url, sizeof url) ||
+        nav_repository_normalize_url(root, repository.url, sizeof repository.url, error, error_size)) goto invalid;
+    /* This provider applies exactly the same origin, prefix and encoded-path
+     * checks used by real requests. Never substitute a hostname-only match. */
+    NavProvider *check = nav_http_provider_create(&repository, NULL, error, error_size);
+    NavLocation location;
+    char *query = strchr(url, '?'); if (query) *query = 0;
+    bool valid = check && !check->location(check, url, &location, error, error_size);
+    nav_provider_destroy(check);
+    if (!valid || strlen(repository.url) >= size) goto invalid;
+    snprintf(out, size, "%s", repository.url); return 0;
+invalid:
+    snprintf(error, error_size, "Scope must be a valid same-origin parent URL (no query or credentials)");
+    return -1;
+}
+
+int nav_http_auth_scope_remember(NavConfig *config, const NavRepository *input,
+                                 const char *resource, char *error, size_t size)
+{
+    NavRepository scope = *input;
+    if (!scope.credential[0] || nav_http_scope_normalize(input->url, resource,
+        scope.url, sizeof scope.url, error, size)) return -1;
+    snprintf(scope.name, sizeof scope.name, "HTTP authentication scope");
+    size_t index = config->auth_scope_count;
+    for (size_t i = 0; i < config->auth_scope_count; i++)
+        if (!strcmp(config->auth_scopes[i].url, scope.url)) { index = i; break; }
+    if (index == NAV_AUTH_SCOPE_MAX) { snprintf(error, size, "HTTP authentication scope limit reached"); return -1; }
+    NavRepository previous = config->auth_scopes[index];
+    bool added = index == config->auth_scope_count;
+    config->auth_scopes[index] = scope;
+    if (added) config->auth_scope_count++;
+    if (nav_config_save_repositories(config, error, size)) {
+        config->auth_scopes[index] = previous;
+        if (added) config->auth_scope_count--;
+        return -1;
+    }
+    return 0;
 }
 
 /* Trailing slash is an explicit directory intent. No extension guessing or
@@ -97,6 +171,18 @@ NavProvider *nav_location_resolve(NavApp *app, const char *input,
             bool valid = check && !check->location(check, plain, &location, error, size);
             nav_provider_destroy(check);
             if (valid) { repository = normalized; best = length; }
+        }
+    }
+    if (!repository.credential[0]) {
+        size_t scope_best = 0;
+        for (size_t i = 0; i < app->config.auth_scope_count; i++) {
+            const NavRepository *scope = &app->config.auth_scopes[i];
+            char root[NAV_URL_MAX];
+            if (!scope->credential[0] || nav_http_scope_normalize(scope->url, url, root,
+                 sizeof root, error, size) || strlen(root) <= scope_best) continue;
+            repository = *scope;
+            snprintf(repository.url, sizeof repository.url, "%s", root);
+            scope_best = strlen(root); best = scope_best;
         }
     }
     if (!best) {

@@ -7,11 +7,20 @@ void nav_ui_text(int, int, int, const char *, NavStyle);
 void nav_ui_box(int, int, int, int, const char *, NavStyle);
 int nav_ui_prompt_text(const char *, const char *, char *, size_t, NavUiRedrawFn, void *);
 int nav_ui_prompt_secret(const char *, const char *, char *, size_t, NavUiRedrawFn, void *);
+/* 1 unlocked, 0 cancelled, -1 failed; always wipes the password buffer. */
+int nav_ui_unlock_vault(NavCredentialStore *, char *, size_t, NavUiRedrawFn, void *);
 bool nav_ui_confirm(const char *, NavUiRedrawFn, void *);
 void nav_ui_info(const char *, const char *const *, size_t);
 void nav_show_properties(const NavEntry *, const char *);
 int nav_ui_location_prompt(char *, size_t, NavUiRedrawFn, void *);
-int nav_ui_download(NavProvider *, const NavEntry *, const NavLocation *, const NavConfig *, NavUiRedrawFn, void *);
+int nav_ui_download(NavApp *, NavProvider *, const NavEntry *, const NavLocation *, const NavConfig *, NavUiRedrawFn, void *);
+typedef struct {
+    char names[NAV_CREDENTIAL_MAX][NAV_CREDENTIAL_NAME_MAX];
+    size_t count;
+} NavHttpAuthAttempts;
+bool nav_ui_http_auth_retry(NavApp *, NavProvider **, bool *, const char *,
+                            NavHttpAuthAttempts *, const char *, NavUiRedrawFn, void *);
+bool nav_ui_repository_add_prefilled(NavApp *, NavRepository *, const char *);
 /* Returns 1 on success, transferring provider ownership only if owned=true;
  * never runs an input loop. Failure leaves provider ownership with the caller. */
 int nav_ui_viewer_open(NavApp *, NavProvider *, const NavEntry *, bool, NavUiRedrawFn, void *);

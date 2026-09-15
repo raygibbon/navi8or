@@ -278,6 +278,11 @@ HTTP_TEST_SOURCES := src/provider/smb.c src/provider/smb_path.c src/provider/reg
 release-profile-test: $(APP_BINARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/release_profile_test.c $(filter-out $(OBJECT_DIR)/main.o,$(OBJECTS)) $(OBJECT_DIR)/toml.o $(LDFLAGS) -o build/release-profile-test $(LDLIBS)
 check: release-check-test
+check: http-auth-test
+.PHONY: http-auth-test
+http-auth-test: nav
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/http_auth_test.c $(filter-out $(OBJECT_DIR)/main.o,$(OBJECTS)) $(OBJECT_DIR)/toml.o $(LDFLAGS) -o build/http-auth-test $(LDLIBS)
+	python3 tests/http_auth_integration_test.py ./build/http-auth-test ./nav
 check: network-test
 check: identity-test
 .PHONY: identity-test

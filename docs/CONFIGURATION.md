@@ -2,7 +2,7 @@
 
 Linux uses $XDG_CONFIG_HOME/nav, otherwise ~/.config/nav. Windows uses
 %APPDATA%/Navi8or. nav.toml contains operational settings, repositories.toml
-repository definitions, vault.bin encrypted credentials and profiles/ personal
+repository definitions and scoped HTTP credential references, vault.bin encrypted credentials and profiles/ personal
 UI profiles. Never commit operational files or vaults.
 
 Precedence: compiled defaults → normal configuration → exact -i profile →
