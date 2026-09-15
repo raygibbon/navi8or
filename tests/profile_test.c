@@ -145,18 +145,18 @@ int main(void)
     char *template_before = read_text("themes/classic-dos.toml");
     assert(nav_profile_save(&app->config, "themes/classic-dos.toml", error, sizeof error));
     char *template_after = read_text("themes/classic-dos.toml"); assert(!strcmp(template_before, template_after)); free(template_before); free(template_after);
-    assert(!nav_profile_user_path("Ray DOS", path, sizeof path, error, sizeof error));
+    assert(!nav_profile_user_path("Custom DOS", path, sizeof path, error, sizeof error));
 #ifdef _WIN32
-    assert(strstr(path, "/Navi8or/profiles/Ray DOS.toml"));
+    assert(strstr(path, "/Navi8or/profiles/Custom DOS.toml"));
 #else
-    assert(strstr(path, "/nav/profiles/Ray DOS.toml"));
+    assert(strstr(path, "/nav/profiles/Custom DOS.toml"));
 #endif
     write_text(path, "[profile]\nname=\"Conflict\"\n[keys.panel.commands]\n\"file.copy\"=\"Ctrl+C\"\n\"file.move\"=\"Ctrl+C\"\n");
     assert(nav_config_load_file(loaded, path, error, sizeof error));
     assert(strstr(error, path) && strstr(error, "Ctrl+C") &&
            strstr(error, "Copy") && strstr(error, "Move"));
-    write_text(path, "# Keep this close to Far Manager\n[profile]\nname=\"Ray DOS\" # identity\n[colors]\nfile=\"yellow\" # keep this comment\n[some_future_section]\nfoo = \"bar\"\narr = [\n  \"one\",\n  \"two\"\n]\n[keys]\ncopy=\"F5\" # binding comment\n[keys.panel]\n\"F6\"=\"file.move\" # old move\n");
-    snprintf(app->config.profile.display_name, sizeof app->config.profile.display_name, "Ray DOS");
+    write_text(path, "# Keep this close to Far Manager\n[profile]\nname=\"Custom DOS\" # identity\n[colors]\nfile=\"yellow\" # keep this comment\n[some_future_section]\nfoo = \"bar\"\narr = [\n  \"one\",\n  \"two\"\n]\n[keys]\ncopy=\"F5\" # binding comment\n[keys.panel]\n\"F6\"=\"file.move\" # old move\n");
+    snprintf(app->config.profile.display_name, sizeof app->config.profile.display_name, "Custom DOS");
     app->config.show_menu_keys = app->config.show_dialog_keys = app->config.show_help_keys = false;
     app->config.show_function_bar = false; app->config.profile.background[NAV_STYLE_FILE] = 4;
     app->config.show_app_identity = false;

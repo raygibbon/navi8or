@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    defaults:
+      run:
+        working-directory: /src
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Use a neutral build root for dependency metadata
+        working-directory: ${{ github.workspace }}
+        run: |
+          sudo mkdir -p /src
+          sudo mount --bind "$GITHUB_WORKSPACE" /src
+      - name: Validate explicit tag against VERSION
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python3 scripts/release.py version)
+          test "$RELEASE_TAG" = "v$version"
+          test -s LICENSE
+          test -s THIRD_PARTY_NOTICES.md
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      - name: Install Ubuntu baseline and MinGW tools
+        run: |
+          sudo sh scripts/install-container-deps.sh
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 wine wine64
+      - name: Complete Linux tests
+        run: make check location-test
+      - name: Windows compile and Wine smoke
+        env:
+          WINEDEBUG: '-all'
+        run: |
+          make TARGET=windows windows-deps all windows-error-test
+          test "$(wine build/windows/nav.exe --version | tr -d '\r')" = "Navi8or $RELEASE_VERSION"
+          wine build/windows/nav.exe --help
+      - name: Build, package and verify release assets
+        run: |
+          make release
+          make release-check
+      - name: Publish only the validated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$RELEASE_TAG" = "v$(python3 scripts/release.py version)"
+          gh release create "$RELEASE_TAG" --verify-tag --title "Navi8or $RELEASE_VERSION" \
+            --notes 'Linux x86-64 (Ubuntu 22.04 baseline) and Windows x86-64. See README and THIRD_PARTY_NOTICES in each package. The relinking kit accompanies both static libsmb2 builds. Windows compatibility smoke is not native Windows console validation.' \
+            "build/release/navi8or-$RELEASE_VERSION-linux-x86_64.tar.gz" \
+            "build/release/navi8or-$RELEASE_VERSION-windows-x86_64.zip" \
+            "build/release/navi8or-$RELEASE_VERSION-relinking.tar.gz" \
+            build/release/SHA256SUMS

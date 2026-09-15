@@ -17,9 +17,7 @@ Exiting fullscreen retains the active pane and both sessions.
 
 ## Ownership and event routing
 
-Previously F3 changed `app->mode` to a global Viewer mode and ran a separate
-blocking Viewer input loop. That top-level loop and mode are removed. `NavPane`
-now owns `content_mode` and an opaque heap-allocated `NavPaneViewer` session.
+`NavPane` owns `content_mode` and an opaque heap-allocated `NavPaneViewer` session.
 The one main application loop selects `NAV_CONTEXT_PANEL` or
 `NAV_CONTEXT_VIEWER` from the active pane before reading each event. Focus
 commands route at application level before content dispatch; Viewer never
@@ -76,7 +74,7 @@ clipboard API (including its existing headless fallback).
 
 ## Commands and shortcuts
 
-New commands have no default shortcuts. They are available through menus and
+Fullscreen and link commands have no default shortcuts. They are available through menus and
 the Preferences Key Bindings Viewer category; assign keys using the existing
 profile schema. For example (optional bindings, not bundled defaults):
 

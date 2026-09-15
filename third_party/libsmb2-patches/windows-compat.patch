@@ -1,0 +1,26 @@
+--- a/lib/compat.h
++++ b/lib/compat.h
+@@ -1,3 +1,5 @@
+ /* -*-  mode:c; tab-width:8; c-basic-offset:8; indent-tabs-mode:nil;  -*- */
++/* Modified by Navi8or on 2026-09-15: C99 MinGW socket helpers need
++ * internal (static inline) linkage. Original LGPL terms remain unchanged. */
+ /*
+    Copyright (C) 2020 by Ronnie Sahlberg <ronniesahlberg@gmail.com>
+@@ -245,7 +247,7 @@
+ 
+ #else
+ 
+-inline int writev(t_socket sock, struct iovec *iov, int nvecs)
++static inline int writev(t_socket sock, struct iovec *iov, int nvecs)
+ {
+   DWORD ret;
+ 
+@@ -257,7 +259,7 @@
+   return -1;
+ }
+ 
+-inline int readv(t_socket sock, struct iovec *iov, int nvecs)
++static inline int readv(t_socket sock, struct iovec *iov, int nvecs)
+ {
+   DWORD ret;
+   DWORD flags = 0;

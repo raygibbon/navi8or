@@ -12,8 +12,8 @@ edit the explicit layout, panes, viewer, shortcut and primary key defaults.
 Modern syntax is `[profile]`, `[colors.role]` and command-to-key `[keys]`.
 Legacy `[theme]` and `[ui.*]` palette syntax remains supported for compatibility.
 External `[editor]` command settings belong in normal `nav.toml`, not UI profiles.
-See [profile configuration](../docs/THEME_FORMAT.md).
+See [profile configuration](../docs/CONFIGURATION.md).
 
 Use Options → Preferences to preview changes. Save/Save As creates a personal
 profile through the platform config-directory abstraction. These four templates
-are protected from normal saves. See [editing profiles](../docs/PROFILES.md).
+are protected from normal saves. See [editing profiles](../docs/CONFIGURATION.md).
