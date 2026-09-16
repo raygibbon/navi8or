@@ -84,7 +84,48 @@ def main():
         finally:
             stop_nav(pid, fd, exited)
 
+    viewer_during_copy(executable)
     print("nav-rs navigation, C Viewer handoff, background copy, and exit: passed")
+
+
+def viewer_during_copy(executable):
+    with tempfile.TemporaryDirectory(prefix="nav-rs-viewer-copy-") as temporary:
+        root = Path(temporary)
+        left = root / "left"
+        right = root / "right"
+        left.mkdir()
+        right.mkdir()
+        source = left / "large.txt"
+        source.write_bytes(b"viewer during background copy\n" * 200000)
+
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ["TERM"] = "xterm-256color"
+            os.execv(executable, [executable, str(left), str(right)])
+
+        exited = False
+        try:
+            resize(fd, 100, 30)
+            time.sleep(0.2)
+            screen = TerminalScreen(100, 30)
+            screen.feed(drain(fd))
+            write(fd, DOWN, screen=screen)
+            viewer_output = write(fd, b"\x1b[15~\x1bOR", delay=0.5)
+            viewer = TerminalScreen(100, 30)
+            viewer.feed(viewer_output)
+            assert "viewer during background copy" in viewer.text(), viewer.text()
+            assert (right / "large.txt").read_bytes() == source.read_bytes()
+
+            returned_output = write(fd, b"\x1b", delay=0.4)
+            returned = TerminalScreen(100, 30)
+            returned.feed(returned_output)
+            assert "Copy complete" in returned.text(), returned.text()
+            assert returned.text().count("large.txt") >= 2, returned.text()
+            write(fd, b"\x1b[21~")
+            wait_for_exit(pid, "nav-rs Viewer during copy")
+            exited = True
+        finally:
+            stop_nav(pid, fd, exited)
 
 
 if __name__ == "__main__":

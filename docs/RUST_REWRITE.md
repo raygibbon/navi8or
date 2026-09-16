@@ -35,12 +35,17 @@ make rust-check
 - `viewer_bridge` launches the existing C Viewer in the `nav-viewer-c` helper
   process. The boundary is one local path argument; no C Viewer structs or
   ownership cross into Rust.
-- `JobManager` owns process-lifetime job information and one active cancellation
-  token. A worker thread sends typed messages over a bounded standard-library
-  channel; only the UI thread updates application state or renders.
+- `JobManager` owns process-lifetime job information, one active cancellation
+  token and its worker `JoinHandle`. The worker sends reliable start/terminal
+  events on an unbounded channel and best-effort progress through a one-slot
+  channel with `try_send`. A full progress queue never stalls copying; missing
+  intermediate updates do not affect the final state.
 - `transfer` owns the provider-neutral streaming loop. Providers supply
   `open_read` and `open_write`; the transfer layer moves data with a reusable
-  128 KiB buffer and reports monotonic byte progress.
+  128 KiB buffer and reports monotonic byte progress. `open_write` returns a
+  `WriteSession`: the job explicitly calls `finish` after a successful copy, or
+  `abort` after cancellation or read/write failure. A successful last write
+  alone does not mark the job complete.
 
 The long-operation boundary is `UI -> commands/jobs -> providers -> I/O`. Copy
 is deliberately not a provider operation: a transfer combines a source
@@ -49,8 +54,12 @@ same-provider server-side copy can be an advertised optimization without
 replacing this generic path. No async runtime is present.
 
 The event loop polls Crossterm with a bounded timeout, redraws only after state
-changes, and drains job messages without blocking. The bounded channel prevents
-an especially fast producer from growing an unbounded progress backlog.
+changes, and drains job messages without blocking. Quitting requests
+cancellation and joins the worker before process exit; `JobManager::Drop` does
+the same defensively. Cancellation is checked between chunks, so a provider
+read that does not return promptly can delay shutdown. The C Viewer may own the
+terminal while a transfer runs: progress may be discarded during that pause,
+but reliable completion is processed and the destination refreshed on return.
 
 ## Current behavior
 
@@ -70,8 +79,11 @@ name. The worker streams the file while navigation, pane switching and terminal
 resize remain responsive; the status line shows byte and percentage progress.
 The destination pane refreshes after completion. One transfer may be active at
 a time, and Escape requests cancellation. Incomplete destinations created by a
-cancelled or failed job are removed. Existing destinations are never
-overwritten in this milestone, which makes that cleanup policy deterministic.
+cancelled or failed job are removed by the local write session. Local writes go
+to a same-directory temporary file; `finish` flushes and publishes it, while
+`abort` removes it. Existing destinations are never overwritten in this
+milestone, including if one appears while the session is open. Write sessions
+own this cleanup, so a destination needs WRITE but not DELETE capability.
 
 Opening a regular local file or pressing F3 launches `nav-viewer-c`, which wraps
 the mature C Viewer. Rust first restores its terminal, waits for the helper, then

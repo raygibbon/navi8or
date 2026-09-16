@@ -149,6 +149,12 @@ pub struct WriteOptions {
     pub total: Option<u64>,
 }
 
+/// A destination write that must be explicitly committed or aborted.
+pub trait WriteSession: Write + Send {
+    fn finish(&mut self) -> io::Result<()>;
+    fn abort(&mut self) -> io::Result<()>;
+}
+
 /// Provider-neutral resource operations.
 ///
 /// Blocking providers will eventually run behind a jobs boundary. The trait
@@ -184,7 +190,7 @@ pub trait Provider: Any + Send + Sync {
         &self,
         _resource: &ResourceId,
         _options: WriteOptions,
-    ) -> io::Result<Box<dyn Write + Send>> {
+    ) -> io::Result<Box<dyn WriteSession>> {
         Err(unsupported("write"))
     }
 

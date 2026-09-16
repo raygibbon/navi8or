@@ -1,14 +1,90 @@
 use crate::provider::{
     Capabilities, Entry, EntryKind, ListOptions, Location, LocationInput, Provider, ResourceId,
-    ResourceMetadata, ResourceName, WriteOptions,
+    ResourceMetadata, ResourceName, WriteOptions, WriteSession,
 };
 use std::cmp::Ordering;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+static WRITE_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Default)]
 pub struct LocalProvider;
+
+struct LocalWriteSession {
+    file: Option<File>,
+    temporary: PathBuf,
+    destination: PathBuf,
+    overwrite: bool,
+    finished: bool,
+}
+
+impl Write for LocalWriteSession {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.file_mut()?.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file_mut()?.flush()
+    }
+}
+
+impl WriteSession for LocalWriteSession {
+    fn finish(&mut self) -> io::Result<()> {
+        if self.finished {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "write session is already finished",
+            ));
+        }
+        self.file_mut()?.flush()?;
+        drop(self.file.take());
+        if self.overwrite {
+            fs::rename(&self.temporary, &self.destination)?;
+        } else {
+            // Hard-link creation fails atomically if another writer won the name.
+            fs::hard_link(&self.temporary, &self.destination)?;
+            // Once linked, the destination is committed even if this cleanup fails.
+            let _ = fs::remove_file(&self.temporary);
+        }
+        self.finished = true;
+        Ok(())
+    }
+
+    fn abort(&mut self) -> io::Result<()> {
+        if self.finished {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot abort a finished write session",
+            ));
+        }
+        drop(self.file.take());
+        match fs::remove_file(&self.temporary) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl LocalWriteSession {
+    fn file_mut(&mut self) -> io::Result<&mut File> {
+        self.file.as_mut().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "write session is no longer open")
+        })
+    }
+}
+
+impl Drop for LocalWriteSession {
+    fn drop(&mut self) {
+        if !self.finished {
+            drop(self.file.take());
+            let _ = fs::remove_file(&self.temporary);
+        }
+    }
+}
 
 impl LocalProvider {
     pub fn new() -> Self {
@@ -171,14 +247,38 @@ impl Provider for LocalProvider {
         &self,
         resource: &ResourceId,
         options: WriteOptions,
-    ) -> io::Result<Box<dyn Write + Send>> {
+    ) -> io::Result<Box<dyn WriteSession>> {
+        let destination = Self::path_for_resource(resource);
+        if !options.overwrite && destination.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "destination already exists",
+            ));
+        }
+        let parent = destination.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent")
+        })?;
+        let leaf = destination.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "destination has no leaf name")
+        })?;
+        let mut temporary_name = leaf.to_os_string();
+        temporary_name.push(format!(
+            ".nav-part-{}-{}",
+            std::process::id(),
+            WRITE_SESSION_ID.fetch_add(1, AtomicOrdering::Relaxed)
+        ));
+        let temporary = parent.join(temporary_name);
         let file = OpenOptions::new()
             .write(true)
-            .create_new(!options.overwrite)
-            .create(options.overwrite)
-            .truncate(options.overwrite)
-            .open(Self::path_for_resource(resource))?;
-        Ok(Box::new(file))
+            .create_new(true)
+            .open(&temporary)?;
+        Ok(Box::new(LocalWriteSession {
+            file: Some(file),
+            temporary,
+            destination,
+            overwrite: options.overwrite,
+            finished: false,
+        }))
     }
 
     fn mkdir(&self, resource: &ResourceId) -> io::Result<()> {
@@ -391,10 +491,34 @@ mod tests {
             )
             .unwrap();
         writer.write_all(&copied).unwrap();
-        drop(writer);
+        writer.finish().unwrap();
         assert_eq!(
             fs::read(LocalProvider::path_for_resource(&destination)).unwrap(),
             bytes
+        );
+
+        let aborted = ResourceId::from_provider(root.join("aborted.bin").into_os_string());
+        let mut writer = provider
+            .open_write(&aborted, WriteOptions::default())
+            .unwrap();
+        writer.write_all(b"partial").unwrap();
+        writer.abort().unwrap();
+        assert!(!LocalProvider::path_for_resource(&aborted).exists());
+
+        let raced = ResourceId::from_provider(root.join("raced.bin").into_os_string());
+        let mut writer = provider
+            .open_write(&raced, WriteOptions::default())
+            .unwrap();
+        writer.write_all(b"incoming").unwrap();
+        fs::write(LocalProvider::path_for_resource(&raced), b"winner").unwrap();
+        assert_eq!(
+            writer.finish().unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        writer.abort().unwrap();
+        assert_eq!(
+            fs::read(LocalProvider::path_for_resource(&raced)).unwrap(),
+            b"winner"
         );
         fs::remove_dir_all(root).unwrap();
     }

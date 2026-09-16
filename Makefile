@@ -149,7 +149,8 @@ $(APP_BINARY): $(OBJECTS) $(OBJECT_DIR)/toml.o $(LINUX_ARCHIVES) | verify-curl v
 viewer-helper: nav-viewer-c
 rust: nav-viewer-c
 rust-check: nav-viewer-c
-$(VIEWER_HELPER_OBJECT_DIR)/viewer-helper/main.o: $(VERSION_HEADER)
+$(VIEWER_HELPER_OBJECT_DIR)/viewer-helper/main.o \
+$(VIEWER_HELPER_OBJECT_DIR)/ui/core/menu_layout.o: $(VERSION_HEADER)
 
 nav-viewer-c: $(VIEWER_HELPER_OBJECTS) $(VIEWER_HELPER_OBJECT_DIR)/toml.o
 	$(CC) $(LDFLAGS) -Wl,--gc-sections -o $@ $^ -pthread

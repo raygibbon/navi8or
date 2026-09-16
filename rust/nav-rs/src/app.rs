@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::io;
 use std::sync::Arc;
 
-const HISTORY_LIMIT: usize = 64;
+const HISTORY_LIMIT: usize = 100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SortMode {
@@ -421,6 +421,9 @@ impl AppState {
                 return;
             }
             Command::Quit => {
+                if let Err(error) = self.jobs.shutdown() {
+                    self.status = format!("Job shutdown failed: {error}");
+                }
                 self.running = false;
                 return;
             }
@@ -737,6 +740,23 @@ mod tests {
         app.dispatch(Command::SwitchPane);
         assert_eq!(app.active, 1);
         assert_eq!(app.panes[1].location.display, "memory://root");
+    }
+
+    #[test]
+    fn history_limit_matches_the_c_default() {
+        assert_eq!(HISTORY_LIMIT, 100);
+        let mut pane = pane();
+        for index in 0..150 {
+            pane.load(
+                MemoryProvider::location(&format!("location-{index}")),
+                false,
+                true,
+            )
+            .unwrap();
+        }
+        assert_eq!(pane.history.len(), 100);
+        assert_eq!(pane.history[0].display, "memory://location-50");
+        assert_eq!(pane.history_index, 99);
     }
 
     #[test]

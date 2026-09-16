@@ -16,6 +16,6 @@ pub use job::{CopyRequest, JobId, JobInfo, JobManager, JobMessage, JobOperation,
 pub use local::LocalProvider;
 pub use provider::{
     Capabilities, Entry, EntryKind, ListOptions, Location, LocationInput, Provider, ResourceId,
-    ResourceMetadata, ResourceName, WriteOptions,
+    ResourceMetadata, ResourceName, WriteOptions, WriteSession,
 };
 pub use transfer::{TRANSFER_BUFFER_SIZE, TransferOutcome, copy_stream};

@@ -3,7 +3,7 @@ use crate::transfer::{TransferOutcome, copy_stream};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::thread;
+use std::thread::{self, JoinHandle};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct JobId(u64);
@@ -66,23 +66,29 @@ pub enum JobMessage {
 struct ActiveJob {
     id: JobId,
     cancelled: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
 }
 
 pub struct JobManager {
     next_id: u64,
-    sender: mpsc::SyncSender<JobMessage>,
-    receiver: mpsc::Receiver<JobMessage>,
+    reliable_sender: mpsc::Sender<JobMessage>,
+    reliable_receiver: mpsc::Receiver<JobMessage>,
+    progress_sender: mpsc::SyncSender<JobMessage>,
+    progress_receiver: mpsc::Receiver<JobMessage>,
     jobs: Vec<JobInfo>,
     active: Option<ActiveJob>,
 }
 
 impl Default for JobManager {
     fn default() -> Self {
-        let (sender, receiver) = mpsc::sync_channel(64);
+        let (reliable_sender, reliable_receiver) = mpsc::channel();
+        let (progress_sender, progress_receiver) = mpsc::sync_channel(1);
         Self {
             next_id: 1,
-            sender,
-            receiver,
+            reliable_sender,
+            reliable_receiver,
+            progress_sender,
+            progress_receiver,
             jobs: Vec::new(),
             active: None,
         }
@@ -107,12 +113,6 @@ impl JobManager {
             Capabilities::WRITE,
             "destination is read-only",
         )?;
-        require_capability(
-            request.destination_provider.as_ref(),
-            Capabilities::DELETE,
-            "destination cannot remove an incomplete transfer",
-        )?;
-
         let id = JobId(self.next_id);
         self.next_id += 1;
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -127,21 +127,33 @@ impl JobManager {
             current_item: request.current_item.clone(),
             error: None,
         });
-        self.active = Some(ActiveJob {
-            id,
-            cancelled: cancelled.clone(),
-        });
-        let sender = self.sender.clone();
-        thread::Builder::new()
+        let reliable_sender = self.reliable_sender.clone();
+        let progress_sender = self.progress_sender.clone();
+        let handle = thread::Builder::new()
             .name(format!("nav-copy-{}", id.0))
-            .spawn(move || run_copy(id, request, cancelled, sender))
+            .spawn({
+                let worker_cancelled = cancelled.clone();
+                move || {
+                    run_copy(
+                        id,
+                        request,
+                        worker_cancelled,
+                        reliable_sender,
+                        progress_sender,
+                    )
+                }
+            })
             .inspect_err(|error| {
-                self.active = None;
                 if let Some(info) = self.jobs.iter_mut().find(|info| info.id == id) {
                     info.state = JobState::Failed;
                     info.error = Some(error.to_string());
                 }
             })?;
+        self.active = Some(ActiveJob {
+            id,
+            cancelled,
+            handle,
+        });
         Ok(id)
     }
 
@@ -163,24 +175,81 @@ impl JobManager {
     }
 
     pub fn poll(&mut self) -> Vec<JobMessage> {
-        let messages: Vec<_> = self.receiver.try_iter().collect();
-        for message in &messages {
-            self.apply(message);
+        let mut messages = Vec::new();
+        let pending: Vec<_> = self
+            .progress_receiver
+            .try_iter()
+            .chain(self.reliable_receiver.try_iter())
+            .collect();
+        for message in pending {
+            if self.apply(&message) {
+                if message.is_terminal() {
+                    self.join_finished(message.id());
+                }
+                messages.push(message);
+            }
         }
         messages
     }
 
-    fn apply(&mut self, message: &JobMessage) {
-        let id = match message {
-            JobMessage::Started { id, .. }
-            | JobMessage::Progress { id, .. }
-            | JobMessage::Completed(id)
-            | JobMessage::Failed { id, .. }
-            | JobMessage::Cancelled(id) => *id,
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        let Some(active) = self.active.take() else {
+            return Ok(());
         };
+        active.cancelled.store(true, Ordering::Relaxed);
+        let id = active.id;
+        let joined = active.handle.join();
+        let pending: Vec<_> = self
+            .progress_receiver
+            .try_iter()
+            .chain(self.reliable_receiver.try_iter())
+            .collect();
+        let mut terminal_received = false;
+        for message in pending {
+            terminal_received |= message.id() == id && message.is_terminal();
+            self.apply(&message);
+        }
+        if joined.is_err() {
+            let message = JobMessage::Failed {
+                id,
+                error: "copy worker panicked during shutdown".into(),
+            };
+            self.apply(&message);
+            return Err(io::Error::other("copy worker panicked during shutdown"));
+        }
+        if !terminal_received {
+            let message = JobMessage::Failed {
+                id,
+                error: "copy worker exited without a terminal state".into(),
+            };
+            self.apply(&message);
+            return Err(io::Error::other(
+                "copy worker exited without a terminal state",
+            ));
+        }
+        Ok(())
+    }
+
+    fn join_finished(&mut self, id: JobId) {
+        if self.active.as_ref().is_some_and(|active| active.id == id) {
+            let active = self.active.take().expect("active job checked");
+            let _ = active.handle.join();
+        }
+    }
+
+    fn apply(&mut self, message: &JobMessage) -> bool {
+        let id = message.id();
         let Some(info) = self.jobs.iter_mut().find(|info| info.id == id) else {
-            return;
+            return false;
         };
+        if matches!(message, JobMessage::Progress { .. })
+            && matches!(
+                info.state,
+                JobState::Completed | JobState::Failed | JobState::Cancelled
+            )
+        {
+            return false;
+        }
         match message {
             JobMessage::Started { total, .. } => {
                 info.state = JobState::Running;
@@ -193,19 +262,44 @@ impl JobManager {
                 info.completed = *completed;
                 info.total = *total;
             }
-            JobMessage::Completed(_) => info.state = JobState::Completed,
+            JobMessage::Completed(_) => {
+                info.state = JobState::Completed;
+                if let Some(total) = info.total {
+                    info.completed = total;
+                }
+            }
             JobMessage::Failed { error, .. } => {
                 info.state = JobState::Failed;
                 info.error = Some(error.clone());
             }
             JobMessage::Cancelled(_) => info.state = JobState::Cancelled,
         }
-        if matches!(
-            message,
-            JobMessage::Completed(_) | JobMessage::Failed { .. } | JobMessage::Cancelled(_)
-        ) {
-            self.active = None;
+        true
+    }
+}
+
+impl Drop for JobManager {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+impl JobMessage {
+    fn id(&self) -> JobId {
+        match self {
+            Self::Started { id, .. }
+            | Self::Progress { id, .. }
+            | Self::Completed(id)
+            | Self::Failed { id, .. }
+            | Self::Cancelled(id) => *id,
         }
+    }
+
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed(_) | Self::Failed { .. } | Self::Cancelled(_)
+        )
     }
 }
 
@@ -225,95 +319,99 @@ fn run_copy(
     id: JobId,
     request: CopyRequest,
     cancelled: Arc<AtomicBool>,
-    sender: mpsc::SyncSender<JobMessage>,
+    reliable_sender: mpsc::Sender<JobMessage>,
+    progress_sender: mpsc::SyncSender<JobMessage>,
 ) {
-    let result = run_copy_inner(id, &request, &cancelled, &sender);
-    let terminal = match result {
-        Ok(TransferOutcome::Completed(_)) => JobMessage::Completed(id),
-        Ok(TransferOutcome::Cancelled(_)) => match request
-            .destination_provider
-            .delete(&request.destination)
-        {
-            Ok(()) => JobMessage::Cancelled(id),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => JobMessage::Cancelled(id),
-            Err(error) => JobMessage::Failed {
-                id,
-                error: format!("copy cancelled but partial destination removal failed: {error}"),
-            },
-        },
-        Err((error, destination_created)) => {
-            let cleanup = destination_created
-                .then(|| request.destination_provider.delete(&request.destination))
-                .transpose();
-            JobMessage::Failed {
-                id,
-                error: match cleanup {
-                    Ok(_) => error.to_string(),
-                    Err(cleanup_error) => {
-                        format!("{error}; partial destination removal failed: {cleanup_error}")
-                    }
-                },
-            }
-        }
-    };
-    let _ = sender.send(terminal);
+    let terminal = run_copy_inner(id, &request, &cancelled, &reliable_sender, &progress_sender);
+    let _ = reliable_sender.send(terminal);
 }
 
 fn run_copy_inner(
     id: JobId,
     request: &CopyRequest,
     cancelled: &AtomicBool,
-    sender: &mpsc::SyncSender<JobMessage>,
-) -> Result<TransferOutcome, (io::Error, bool)> {
+    reliable_sender: &mpsc::Sender<JobMessage>,
+    progress_sender: &mpsc::SyncSender<JobMessage>,
+) -> JobMessage {
     let total = request
         .source_provider
         .stat_target(&request.source)
         .ok()
         .and_then(|metadata| metadata.size);
-    let _ = sender.send(JobMessage::Started { id, total });
-    let mut reader = request
-        .source_provider
-        .open_read(&request.source)
-        .map_err(|error| {
-            (
-                context(&format!("open source {}", request.source), error),
-                false,
-            )
-        })?;
-    let mut writer = request
-        .destination_provider
-        .open_write(
-            &request.destination,
-            WriteOptions {
-                overwrite: false,
-                total,
-            },
-        )
-        .map_err(|error| {
-            (
-                context(
+    let _ = reliable_sender.send(JobMessage::Started { id, total });
+    let mut reader = match request.source_provider.open_read(&request.source) {
+        Ok(reader) => reader,
+        Err(error) => {
+            return JobMessage::Failed {
+                id,
+                error: context(&format!("open source {}", request.source), error).to_string(),
+            };
+        }
+    };
+    let mut session = match request.destination_provider.open_write(
+        &request.destination,
+        WriteOptions {
+            overwrite: false,
+            total,
+        },
+    ) {
+        Ok(session) => session,
+        Err(error) => {
+            return JobMessage::Failed {
+                id,
+                error: context(
                     &format!("create destination {}", request.destination),
                     error,
-                ),
-                false,
-            )
-        })?;
-    copy_stream(reader.as_mut(), writer.as_mut(), cancelled, |completed| {
-        let _ = sender.send(JobMessage::Progress {
+                )
+                .to_string(),
+            };
+        }
+    };
+    let outcome = copy_stream(reader.as_mut(), session.as_mut(), cancelled, |completed| {
+        let _ = progress_sender.try_send(JobMessage::Progress {
             id,
             completed,
             total,
         });
-    })
-    .map_err(|error| {
-        (
+    });
+    match outcome {
+        Ok(TransferOutcome::Completed(_)) => match session.finish() {
+            Ok(()) => JobMessage::Completed(id),
+            Err(error) => failure_after_abort(
+                id,
+                context(
+                    &format!("finish destination {}", request.destination),
+                    error,
+                ),
+                session.abort(),
+            ),
+        },
+        Ok(TransferOutcome::Cancelled(_)) => match session.abort() {
+            Ok(()) => JobMessage::Cancelled(id),
+            Err(error) => JobMessage::Failed {
+                id,
+                error: format!("copy cancelled but destination abort failed: {error}"),
+            },
+        },
+        Err(error) => failure_after_abort(
+            id,
             context(
                 &format!("transfer {} to {}", request.source, request.destination),
                 error,
             ),
-            true,
-        )
-    })
+            session.abort(),
+        ),
+    }
+}
+
+fn failure_after_abort(id: JobId, error: io::Error, abort: io::Result<()>) -> JobMessage {
+    JobMessage::Failed {
+        id,
+        error: match abort {
+            Ok(()) => error.to_string(),
+            Err(abort_error) => format!("{error}; destination abort failed: {abort_error}"),
+        },
+    }
 }
 
 fn context(operation: &str, error: io::Error) -> io::Error {
@@ -325,11 +423,13 @@ mod tests {
     use super::*;
     use crate::provider::{
         Entry, EntryKind, ListOptions, Location, LocationInput, ResourceMetadata, ResourceName,
+        WriteSession,
     };
-    use crate::{LocalProvider, TRANSFER_BUFFER_SIZE};
+    use crate::{AppState, Command, LocalProvider, Pane, TRANSFER_BUFFER_SIZE};
     use std::fs;
-    use std::io::{Cursor, Read};
+    use std::io::{Cursor, Read, Write};
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn fixture() -> PathBuf {
@@ -486,6 +586,218 @@ mod tests {
                 cursor: Cursor::new(self.bytes.clone()),
             }))
         }
+    }
+
+    struct RecordingDestination {
+        finished: Arc<AtomicBool>,
+        aborted: Arc<AtomicBool>,
+        fail_write: bool,
+    }
+
+    struct RecordingSession {
+        finished: Arc<AtomicBool>,
+        aborted: Arc<AtomicBool>,
+        fail_write: bool,
+    }
+
+    impl Write for RecordingSession {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                Err(io::Error::new(io::ErrorKind::WriteZero, "injected failure"))
+            } else {
+                Ok(buffer.len())
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl WriteSession for RecordingSession {
+        fn finish(&mut self) -> io::Result<()> {
+            self.finished.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn abort(&mut self) -> io::Result<()> {
+            self.aborted.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    impl Provider for RecordingDestination {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn scheme(&self) -> &'static str {
+            "recording"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Recording destination"
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::WRITE
+        }
+
+        fn resolve(&self, _input: &LocationInput) -> io::Result<Location> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn location(&self, _resource: &ResourceId) -> io::Result<Location> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn parent(&self, _location: &Location) -> io::Result<Option<Location>> {
+            Ok(None)
+        }
+
+        fn child(&self, _location: &Location, _name: &ResourceName) -> io::Result<Location> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        fn list(&self, _location: &Location, _options: &ListOptions) -> io::Result<Vec<Entry>> {
+            Ok(Vec::new())
+        }
+
+        fn open_write(
+            &self,
+            _resource: &ResourceId,
+            _options: WriteOptions,
+        ) -> io::Result<Box<dyn WriteSession>> {
+            Ok(Box::new(RecordingSession {
+                finished: self.finished.clone(),
+                aborted: self.aborted.clone(),
+                fail_write: self.fail_write,
+            }))
+        }
+    }
+
+    fn recording_request(
+        bytes: usize,
+        fail_write: bool,
+    ) -> (CopyRequest, Arc<AtomicBool>, Arc<AtomicBool>) {
+        let finished = Arc::new(AtomicBool::new(false));
+        let aborted = Arc::new(AtomicBool::new(false));
+        (
+            CopyRequest {
+                source_provider: Arc::new(SlowSource {
+                    bytes: vec![5; bytes],
+                }),
+                source: ResourceId::from_provider("source"),
+                destination_provider: Arc::new(RecordingDestination {
+                    finished: finished.clone(),
+                    aborted: aborted.clone(),
+                    fail_write,
+                }),
+                destination: ResourceId::from_provider("destination"),
+                current_item: "recording.bin".into(),
+            },
+            finished,
+            aborted,
+        )
+    }
+
+    #[test]
+    fn saturated_progress_queue_never_blocks_or_fails_the_worker() {
+        let (request, finished, aborted) = recording_request(TRANSFER_BUFFER_SIZE * 100, false);
+        let mut manager = JobManager::default();
+        let id = manager.start_copy(request).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !manager
+            .active
+            .as_ref()
+            .is_some_and(|active| active.handle.is_finished())
+        {
+            assert!(Instant::now() < deadline, "progress queue blocked worker");
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let messages = manager.poll();
+        assert!(messages.contains(&JobMessage::Completed(id)));
+        assert!(
+            messages
+                .iter()
+                .filter(|message| matches!(message, JobMessage::Progress { .. }))
+                .count()
+                <= 1
+        );
+        assert!(finished.load(Ordering::Relaxed));
+        assert!(!aborted.load(Ordering::Relaxed));
+        assert_eq!(manager.jobs()[0].state, JobState::Completed);
+    }
+
+    #[test]
+    fn failed_copy_aborts_without_finishing() {
+        let (request, finished, aborted) = recording_request(TRANSFER_BUFFER_SIZE, true);
+        let mut manager = JobManager::default();
+        manager.start_copy(request).unwrap();
+        let messages = wait_for_terminal(&mut manager);
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, JobMessage::Failed { .. }))
+        );
+        assert!(!finished.load(Ordering::Relaxed));
+        assert!(aborted.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn shutdown_cancels_and_joins_the_active_worker() {
+        let root = fixture();
+        let destination = root.join("shutdown.bin");
+        let mut manager = JobManager::default();
+        manager
+            .start_copy(CopyRequest {
+                source_provider: Arc::new(SlowSource {
+                    bytes: vec![9; TRANSFER_BUFFER_SIZE * 100],
+                }),
+                source: ResourceId::from_provider("source"),
+                destination_provider: Arc::new(LocalProvider::new()),
+                destination: ResourceId::from_provider(destination.as_os_str()),
+                current_item: "shutdown.bin".into(),
+            })
+            .unwrap();
+        thread::sleep(Duration::from_millis(5));
+
+        manager.shutdown().unwrap();
+
+        assert!(manager.active.is_none());
+        assert_eq!(manager.jobs()[0].state, JobState::Cancelled);
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quitting_the_app_cancels_and_joins_a_copy() {
+        let root = fixture();
+        let destination = root.join("quitting.bin");
+        let provider: Arc<dyn Provider> = Arc::new(LocalProvider::new());
+        let left = Pane::open(provider.clone(), root.clone().into_os_string(), false).unwrap();
+        let right = Pane::open(provider, root.clone().into_os_string(), false).unwrap();
+        let mut app = AppState::new([left, right]);
+        app.jobs
+            .start_copy(CopyRequest {
+                source_provider: Arc::new(SlowSource {
+                    bytes: vec![7; TRANSFER_BUFFER_SIZE * 100],
+                }),
+                source: ResourceId::from_provider("source"),
+                destination_provider: Arc::new(LocalProvider::new()),
+                destination: ResourceId::from_provider(destination.as_os_str()),
+                current_item: "quitting.bin".into(),
+            })
+            .unwrap();
+
+        app.dispatch(Command::Quit);
+
+        assert!(!app.running);
+        assert!(app.jobs.active_id().is_none());
+        assert_eq!(app.jobs.jobs()[0].state, JobState::Cancelled);
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
