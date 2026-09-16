@@ -18,6 +18,56 @@ impl ResourceId {
     }
 }
 
+/// User-supplied location input without imposing local path encoding on other providers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocationInput {
+    Text(String),
+    LocalPath(OsString),
+}
+
+impl LocationInput {
+    pub fn display(&self) -> String {
+        match self {
+            Self::Text(value) => value.clone(),
+            Self::LocalPath(value) => value.to_string_lossy().into_owned(),
+        }
+    }
+}
+
+impl From<&str> for LocationInput {
+    fn from(value: &str) -> Self {
+        Self::Text(value.into())
+    }
+}
+
+impl From<String> for LocationInput {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl From<OsString> for LocationInput {
+    fn from(value: OsString) -> Self {
+        Self::LocalPath(value)
+    }
+}
+
+/// A provider-neutral leaf name used when constructing a new resource.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResourceName {
+    Text(String),
+    Native(OsString),
+}
+
+impl ResourceName {
+    pub fn as_os_str(&self) -> &OsStr {
+        match self {
+            Self::Text(value) => OsStr::new(value),
+            Self::Native(value) => value,
+        }
+    }
+}
+
 impl fmt::Display for ResourceId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.to_string_lossy().fmt(formatter)
@@ -93,6 +143,12 @@ pub struct ListOptions {
     pub show_hidden: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WriteOptions {
+    pub overwrite: bool,
+    pub total: Option<u64>,
+}
+
 /// Provider-neutral resource operations.
 ///
 /// Blocking providers will eventually run behind a jobs boundary. The trait
@@ -103,14 +159,21 @@ pub trait Provider: Any + Send + Sync {
     fn display_name(&self) -> &'static str;
     fn capabilities(&self) -> Capabilities;
 
-    fn resolve(&self, input: &str) -> io::Result<Location>;
+    fn resolve(&self, input: &LocationInput) -> io::Result<Location>;
     fn location(&self, resource: &ResourceId) -> io::Result<Location>;
     fn parent(&self, location: &Location) -> io::Result<Option<Location>>;
-    fn child(&self, location: &Location, name: &str) -> io::Result<Location>;
+    fn child(&self, location: &Location, name: &ResourceName) -> io::Result<Location>;
+    fn resource_name(&self, _resource: &ResourceId) -> io::Result<ResourceName> {
+        Err(unsupported("resource name"))
+    }
     fn list(&self, location: &Location, options: &ListOptions) -> io::Result<Vec<Entry>>;
 
     fn stat(&self, _resource: &ResourceId) -> io::Result<ResourceMetadata> {
         Err(unsupported("stat"))
+    }
+
+    fn stat_target(&self, resource: &ResourceId) -> io::Result<ResourceMetadata> {
+        self.stat(resource)
     }
 
     fn open_read(&self, _resource: &ResourceId) -> io::Result<Box<dyn Read + Send>> {
@@ -120,7 +183,7 @@ pub trait Provider: Any + Send + Sync {
     fn open_write(
         &self,
         _resource: &ResourceId,
-        _overwrite: bool,
+        _options: WriteOptions,
     ) -> io::Result<Box<dyn Write + Send>> {
         Err(unsupported("write"))
     }

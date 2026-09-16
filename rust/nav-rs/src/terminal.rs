@@ -60,6 +60,8 @@ fn command_for_key(key: KeyEvent) -> Option<Command> {
     match key.code {
         KeyCode::F(10) => Some(Command::Quit),
         KeyCode::F(3) => Some(Command::View),
+        KeyCode::F(5) => Some(Command::Copy),
+        KeyCode::Esc => Some(Command::CancelJob),
         KeyCode::Char('q' | 'Q') if control => Some(Command::Quit),
         KeyCode::Tab | KeyCode::BackTab => Some(Command::SwitchPane),
         KeyCode::Up => Some(Command::Up),
@@ -555,6 +557,14 @@ mod tests {
         assert_eq!(
             command_for_key(KeyEvent::new(KeyCode::F(3), plain)),
             Some(Command::View)
+        );
+        assert_eq!(
+            command_for_key(KeyEvent::new(KeyCode::F(5), plain)),
+            Some(Command::Copy)
+        );
+        assert_eq!(
+            command_for_key(KeyEvent::new(KeyCode::Esc, plain)),
+            Some(Command::CancelJob)
         );
         assert_eq!(
             command_for_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),

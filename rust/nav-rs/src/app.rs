@@ -1,4 +1,7 @@
-use crate::provider::{Entry, EntryKind, ListOptions, Location, Provider, ResourceId};
+use crate::job::{CopyRequest, JobId, JobManager, JobMessage};
+use crate::provider::{
+    Entry, EntryKind, ListOptions, Location, LocationInput, Provider, ResourceId,
+};
 use std::cmp::Ordering;
 use std::io;
 use std::sync::Arc;
@@ -22,6 +25,8 @@ pub enum Command {
     PageDown,
     Open,
     View,
+    Copy,
+    CancelJob,
     Parent,
     SwitchPane,
     SwapPanes,
@@ -50,8 +55,12 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn open(provider: Arc<dyn Provider>, input: &str, show_hidden: bool) -> io::Result<Self> {
-        let location = provider.resolve(input)?;
+    pub fn open(
+        provider: Arc<dyn Provider>,
+        input: impl Into<LocationInput>,
+        show_hidden: bool,
+    ) -> io::Result<Self> {
+        let location = provider.resolve(&input.into())?;
         let entries = provider.list(&location, &ListOptions { show_hidden })?;
         let mut pane = Self {
             provider,
@@ -158,6 +167,13 @@ impl Pane {
                 Ok(true)
             }
             EntryKind::Directory => {
+                let location = self.provider.location(&entry.resource)?;
+                self.load(location, show_hidden, true)?;
+                Ok(true)
+            }
+            EntryKind::Symlink
+                if self.provider.stat_target(&entry.resource)?.kind == EntryKind::Directory =>
+            {
                 let location = self.provider.location(&entry.resource)?;
                 self.load(location, show_hidden, true)?;
                 Ok(true)
@@ -296,6 +312,14 @@ pub struct AppState {
     pub show_hidden: bool,
     pub status: String,
     viewer_request: Option<ViewerRequest>,
+    pub jobs: JobManager,
+    copy_destination: Option<CopyDestination>,
+}
+
+struct CopyDestination {
+    job: JobId,
+    pane: usize,
+    location: ResourceId,
 }
 
 impl AppState {
@@ -307,6 +331,8 @@ impl AppState {
             show_hidden: false,
             status: "Ready".into(),
             viewer_request: None,
+            jobs: JobManager::default(),
+            copy_destination: None,
         }
     }
 
@@ -317,9 +343,64 @@ impl AppState {
         }
     }
 
-    /// Hook for future channel-backed jobs. It is deliberately non-blocking.
     pub fn service_background_work(&mut self) -> bool {
-        false
+        let messages = self.jobs.poll();
+        let changed = !messages.is_empty();
+        for message in messages {
+            match message {
+                JobMessage::Started { total, .. } => {
+                    self.status = total.map_or_else(
+                        || "Copy started".into(),
+                        |total| format!("Copy started: 0 / {total} bytes"),
+                    );
+                }
+                JobMessage::Progress {
+                    completed, total, ..
+                } => {
+                    self.status = total.map_or_else(
+                        || format!("Copying: {completed} bytes"),
+                        |total| {
+                            let percent = completed
+                                .saturating_mul(100)
+                                .checked_div(total)
+                                .unwrap_or(100);
+                            format!("Copying: {completed} / {total} bytes ({percent}%)")
+                        },
+                    );
+                }
+                JobMessage::Completed(id) => {
+                    self.status = "Copy complete".into();
+                    if let Some(destination) = self.copy_destination.take()
+                        && destination.job == id
+                        && self.panes[destination.pane].location.resource == destination.location
+                        && let Err(error) = self.panes[destination.pane].refresh(self.show_hidden)
+                    {
+                        self.status = format!("Copy complete; refresh failed: {error}");
+                    }
+                }
+                JobMessage::Failed { id, error } => {
+                    self.status = format!("Copy failed: {error}");
+                    if self
+                        .copy_destination
+                        .as_ref()
+                        .is_some_and(|destination| destination.job == id)
+                    {
+                        self.copy_destination = None;
+                    }
+                }
+                JobMessage::Cancelled(id) => {
+                    self.status = "Copy cancelled; partial destination removed".into();
+                    if self
+                        .copy_destination
+                        .as_ref()
+                        .is_some_and(|destination| destination.job == id)
+                    {
+                        self.copy_destination = None;
+                    }
+                }
+            }
+        }
+        changed
     }
 
     pub fn take_viewer_request(&mut self) -> Option<ViewerRequest> {
@@ -334,6 +415,9 @@ impl AppState {
             }
             Command::SwapPanes => {
                 self.panes.swap(0, 1);
+                if let Some(destination) = &mut self.copy_destination {
+                    destination.pane ^= 1;
+                }
                 return;
             }
             Command::Quit => {
@@ -348,6 +432,20 @@ impl AppState {
                         break;
                     }
                 }
+                return;
+            }
+            Command::Copy => {
+                if let Err(error) = self.start_copy() {
+                    self.status = error.to_string();
+                }
+                return;
+            }
+            Command::CancelJob => {
+                self.status = if self.jobs.cancel_active() {
+                    "Cancelling copy...".into()
+                } else {
+                    "No active job".into()
+                };
                 return;
             }
             _ => {}
@@ -391,23 +489,30 @@ impl AppState {
                 }
                 Err(error) => Err(error),
             },
-            Command::View => {
+            Command::View => (|| -> io::Result<()> {
                 self.viewer_request = None;
                 match pane.selected_entry() {
-                    Some(entry) if entry.kind == EntryKind::File => {
-                        self.viewer_request = Some(ViewerRequest {
-                            provider: pane.provider.clone(),
-                            entry: entry.clone(),
-                        });
-                        Ok(())
+                    Some(entry) => {
+                        let viewable = entry.kind == EntryKind::File
+                            || (entry.kind == EntryKind::Symlink
+                                && pane.provider.stat_target(&entry.resource)?.kind
+                                    == EntryKind::File);
+                        if viewable {
+                            self.viewer_request = Some(ViewerRequest {
+                                provider: pane.provider.clone(),
+                                entry: entry.clone(),
+                            });
+                            Ok(())
+                        } else {
+                            Err(io::Error::new(
+                                io::ErrorKind::Unsupported,
+                                "The C Viewer bridge supports regular local files only",
+                            ))
+                        }
                     }
-                    Some(_) => Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "The C Viewer bridge supports regular local files only",
-                    )),
                     None => Err(io::Error::new(io::ErrorKind::NotFound, "No entry selected")),
                 }
-            }
+            })(),
             Command::Parent => pane.parent(self.show_hidden),
             Command::HistoryBack => pane.history_back(self.show_hidden),
             Command::HistoryForward => pane.history_forward(self.show_hidden),
@@ -424,7 +529,12 @@ impl AppState {
                 pane.set_sort_mode(SortMode::Modified);
                 Ok(())
             }
-            Command::SwitchPane | Command::SwapPanes | Command::ToggleHidden | Command::Quit => {
+            Command::SwitchPane
+            | Command::SwapPanes
+            | Command::ToggleHidden
+            | Command::Copy
+            | Command::CancelJob
+            | Command::Quit => {
                 unreachable!()
             }
         };
@@ -433,12 +543,57 @@ impl AppState {
             self.status = error.to_string();
         }
     }
+
+    fn start_copy(&mut self) -> io::Result<()> {
+        let source_index = self.active;
+        let destination_index = source_index ^ 1;
+        let source = &self.panes[source_index];
+        let entry = source
+            .selected_entry()
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No selected entry"))?;
+        let target_kind = if entry.kind == EntryKind::Symlink {
+            source.provider.stat_target(&entry.resource)?.kind
+        } else {
+            entry.kind
+        };
+        if target_kind != EntryKind::File {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Directory copy is not implemented",
+            ));
+        }
+        let source_provider = source.provider.clone();
+        let name = source_provider.resource_name(&entry.resource)?;
+        let destination = &self.panes[destination_index];
+        let destination_provider = destination.provider.clone();
+        let destination_location = destination.location.resource.clone();
+        let target = destination_provider.child(&destination.location, &name)?;
+        let id = self.jobs.start_copy(CopyRequest {
+            source_provider,
+            source: entry.resource,
+            destination_provider,
+            destination: target.resource,
+            current_item: entry.name,
+        })?;
+        self.copy_destination = Some(CopyDestination {
+            job: id,
+            pane: destination_index,
+            location: destination_location,
+        });
+        self.status = "Copy queued".into();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LocalProvider;
     use crate::provider::{Capabilities, ResourceMetadata};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     struct MemoryProvider;
 
@@ -478,8 +633,8 @@ mod tests {
             Capabilities::LIST
         }
 
-        fn resolve(&self, input: &str) -> io::Result<Location> {
-            Ok(Self::location(input))
+        fn resolve(&self, input: &LocationInput) -> io::Result<Location> {
+            Ok(Self::location(&input.display()))
         }
 
         fn location(&self, resource: &ResourceId) -> io::Result<Location> {
@@ -490,8 +645,8 @@ mod tests {
             Ok((location.resource.as_os_str() != "root").then(|| Self::location("root")))
         }
 
-        fn child(&self, _location: &Location, name: &str) -> io::Result<Location> {
-            Ok(Self::location(name))
+        fn child(&self, _location: &Location, name: &crate::ResourceName) -> io::Result<Location> {
+            Ok(Self::location(&name.as_os_str().to_string_lossy()))
         }
 
         fn list(&self, location: &Location, options: &ListOptions) -> io::Result<Vec<Entry>> {
@@ -523,6 +678,16 @@ mod tests {
 
     fn pane() -> Pane {
         Pane::open(Arc::new(MemoryProvider), "root", false).unwrap()
+    }
+
+    fn fixture() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("nav-rs-app-{}-{suffix}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        root
     }
 
     #[test]
@@ -599,5 +764,79 @@ mod tests {
             "The C Viewer bridge supports regular local files only"
         );
         assert!(app.take_viewer_request().is_none());
+    }
+
+    #[test]
+    fn completed_copy_updates_job_state_and_refreshes_destination_pane() {
+        let root = fixture();
+        let left = root.join("left");
+        let right = root.join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+        fs::write(left.join("copied.bin"), b"background copy").unwrap();
+        let provider: Arc<dyn Provider> = Arc::new(LocalProvider::new());
+        let mut source = Pane::open(provider.clone(), left.into_os_string(), false).unwrap();
+        source.move_selection(1);
+        let destination = Pane::open(provider, right.clone().into_os_string(), false).unwrap();
+        let mut app = AppState::new([source, destination]);
+
+        app.dispatch(Command::Copy);
+        assert_eq!(app.status, "Copy queued");
+        app.dispatch(Command::SwitchPane);
+        app.resize(80, 25);
+        assert_eq!(app.active, 1, "copy must not block UI commands");
+        app.dispatch(Command::SwitchPane);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.jobs.active_id().is_some() {
+            app.service_background_work();
+            assert!(Instant::now() < deadline, "copy did not complete");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        app.service_background_work();
+
+        assert_eq!(app.status, "Copy complete");
+        assert_eq!(
+            fs::read(right.join("copied.bin")).unwrap(),
+            b"background copy"
+        );
+        assert!(
+            app.panes[1]
+                .entries()
+                .iter()
+                .any(|entry| entry.name == "copied.bin")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_file_symlinks_are_viewable_and_directory_symlinks_navigate() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture();
+        let directory = root.join("directory");
+        fs::create_dir(&directory).unwrap();
+        fs::write(root.join("file.txt"), b"linked").unwrap();
+        symlink(&directory, root.join("directory-link")).unwrap();
+        symlink(root.join("file.txt"), root.join("file-link")).unwrap();
+        let provider: Arc<dyn Provider> = Arc::new(LocalProvider::new());
+        let left = Pane::open(provider.clone(), root.clone().into_os_string(), false).unwrap();
+        let right = Pane::open(provider, root.clone().into_os_string(), false).unwrap();
+        let mut app = AppState::new([left, right]);
+
+        app.panes[0].set_filter("file-link");
+        app.dispatch(Command::View);
+        assert_eq!(
+            app.take_viewer_request().unwrap().entry.kind,
+            EntryKind::Symlink
+        );
+
+        app.panes[0].set_filter("directory-link");
+        app.dispatch(Command::Open);
+        assert_eq!(
+            app.panes[0].location.resource.as_os_str(),
+            root.join("directory-link").as_os_str()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

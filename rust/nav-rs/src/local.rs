@@ -1,5 +1,6 @@
 use crate::provider::{
-    Capabilities, Entry, EntryKind, ListOptions, Location, Provider, ResourceId, ResourceMetadata,
+    Capabilities, Entry, EntryKind, ListOptions, Location, LocationInput, Provider, ResourceId,
+    ResourceMetadata, ResourceName, WriteOptions,
 };
 use std::cmp::Ordering;
 use std::fs::{self, File, OpenOptions};
@@ -33,8 +34,12 @@ impl LocalProvider {
         Self::path_for_resource(&location.resource)
     }
 
-    fn metadata_for_path(path: &Path) -> io::Result<ResourceMetadata> {
-        let metadata = fs::symlink_metadata(path)?;
+    fn metadata_for_path(path: &Path, follow_symlink: bool) -> io::Result<ResourceMetadata> {
+        let metadata = if follow_symlink {
+            fs::metadata(path)?
+        } else {
+            fs::symlink_metadata(path)?
+        };
         let kind = if metadata.file_type().is_symlink() {
             EntryKind::Symlink
         } else if metadata.is_dir() {
@@ -75,8 +80,11 @@ impl Provider for LocalProvider {
             .union(Capabilities::RENAME)
     }
 
-    fn resolve(&self, input: &str) -> io::Result<Location> {
-        let path = Path::new(input);
+    fn resolve(&self, input: &LocationInput) -> io::Result<Location> {
+        let path = match input {
+            LocationInput::Text(value) => Path::new(value),
+            LocationInput::LocalPath(value) => Path::new(value),
+        };
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -97,10 +105,17 @@ impl Provider for LocalProvider {
             .map(|parent| Self::location_for_path(parent.to_path_buf())))
     }
 
-    fn child(&self, location: &Location, name: &str) -> io::Result<Location> {
+    fn child(&self, location: &Location, name: &ResourceName) -> io::Result<Location> {
         Ok(Self::location_for_path(
-            Self::path_for_location(location).join(name),
+            Self::path_for_location(location).join(name.as_os_str()),
         ))
+    }
+
+    fn resource_name(&self, resource: &ResourceId) -> io::Result<ResourceName> {
+        Self::path_for_resource(resource)
+            .file_name()
+            .map(|name| ResourceName::Native(name.to_os_string()))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resource has no leaf name"))
     }
 
     fn list(&self, location: &Location, options: &ListOptions) -> io::Result<Vec<Entry>> {
@@ -123,7 +138,7 @@ impl Provider for LocalProvider {
                 continue;
             }
             let path = candidate.path();
-            let metadata = match Self::metadata_for_path(&path) {
+            let metadata = match Self::metadata_for_path(&path, false) {
                 Ok(metadata) => metadata,
                 Err(_) => continue,
             };
@@ -141,7 +156,11 @@ impl Provider for LocalProvider {
     }
 
     fn stat(&self, resource: &ResourceId) -> io::Result<ResourceMetadata> {
-        Self::metadata_for_path(&Self::path_for_resource(resource))
+        Self::metadata_for_path(&Self::path_for_resource(resource), false)
+    }
+
+    fn stat_target(&self, resource: &ResourceId) -> io::Result<ResourceMetadata> {
+        Self::metadata_for_path(&Self::path_for_resource(resource), true)
     }
 
     fn open_read(&self, resource: &ResourceId) -> io::Result<Box<dyn Read + Send>> {
@@ -151,13 +170,13 @@ impl Provider for LocalProvider {
     fn open_write(
         &self,
         resource: &ResourceId,
-        overwrite: bool,
+        options: WriteOptions,
     ) -> io::Result<Box<dyn Write + Send>> {
         let file = OpenOptions::new()
             .write(true)
-            .create_new(!overwrite)
-            .create(overwrite)
-            .truncate(overwrite)
+            .create_new(!options.overwrite)
+            .create(options.overwrite)
+            .truncate(options.overwrite)
             .open(Self::path_for_resource(resource))?;
         Ok(Box::new(file))
     }
@@ -241,15 +260,21 @@ mod tests {
         let root = fixture();
         fs::create_dir(root.join("child")).unwrap();
         let provider = LocalProvider::new();
-        let location = provider.resolve(root.to_str().unwrap()).unwrap();
+        let location = provider
+            .resolve(&LocationInput::LocalPath(root.as_os_str().to_os_string()))
+            .unwrap();
         assert_eq!(
             location.display,
             root.canonicalize().unwrap().to_string_lossy()
         );
 
-        let child = provider.child(&location, "child").unwrap();
+        let child = provider
+            .child(&location, &ResourceName::Text("child".into()))
+            .unwrap();
         assert_eq!(child.display, root.join("child").to_string_lossy());
-        let child = provider.resolve(&child.display).unwrap();
+        let child = provider
+            .resolve(&LocationInput::Text(child.display.clone()))
+            .unwrap();
         assert_eq!(provider.parent(&child).unwrap(), Some(location));
 
         fs::remove_dir_all(root).unwrap();
@@ -263,7 +288,9 @@ mod tests {
         fs::write(root.join("beta.txt"), b"beta").unwrap();
         fs::write(root.join(".secret"), b"hidden").unwrap();
         let provider = LocalProvider::new();
-        let location = provider.resolve(root.to_str().unwrap()).unwrap();
+        let location = provider
+            .resolve(&LocationInput::LocalPath(root.as_os_str().to_os_string()))
+            .unwrap();
 
         let entries = provider.list(&location, &ListOptions::default()).unwrap();
         let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
@@ -297,7 +324,9 @@ mod tests {
         let path = root.join(&name);
         fs::write(&path, b"identity").unwrap();
         let provider = LocalProvider::new();
-        let location = provider.resolve(root.to_str().unwrap()).unwrap();
+        let location = provider
+            .resolve(&LocationInput::LocalPath(root.as_os_str().to_os_string()))
+            .unwrap();
         let entries = provider.list(&location, &ListOptions::default()).unwrap();
         let entry = entries
             .iter()
@@ -322,13 +351,51 @@ mod tests {
         fs::create_dir(&real).unwrap();
         symlink(&real, &link).unwrap();
         let provider = LocalProvider::new();
-        let location = provider.resolve(link.to_str().unwrap()).unwrap();
+        let location = provider
+            .resolve(&LocationInput::LocalPath(link.as_os_str().to_os_string()))
+            .unwrap();
         assert_eq!(LocalProvider::path_for_resource(&location.resource), link);
 
         let parent = provider
-            .resolve(&format!("{}/link/..", root.display()))
+            .resolve(&LocationInput::LocalPath(
+                root.join("link/..").into_os_string(),
+            ))
             .unwrap();
         assert_eq!(LocalProvider::path_for_resource(&parent.resource), root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn local_streams_read_and_write_exact_bytes() {
+        let root = fixture();
+        let source = root.join("source.bin");
+        let destination = root.join("destination.bin");
+        let bytes = b"provider-neutral stream data";
+        fs::write(&source, bytes).unwrap();
+        let provider = LocalProvider::new();
+        let source = ResourceId::from_provider(source.into_os_string());
+        let destination = ResourceId::from_provider(destination.into_os_string());
+
+        let mut reader = provider.open_read(&source).unwrap();
+        let mut copied = Vec::new();
+        reader.read_to_end(&mut copied).unwrap();
+        assert_eq!(copied, bytes);
+
+        let mut writer = provider
+            .open_write(
+                &destination,
+                WriteOptions {
+                    overwrite: false,
+                    total: Some(bytes.len() as u64),
+                },
+            )
+            .unwrap();
+        writer.write_all(&copied).unwrap();
+        drop(writer);
+        assert_eq!(
+            fs::read(LocalProvider::path_for_resource(&destination)).unwrap(),
+            bytes
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

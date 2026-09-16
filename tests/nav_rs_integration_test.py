@@ -20,7 +20,8 @@ def main():
         child = left / "child"
         child.mkdir(parents=True)
         right.mkdir()
-        (left / "sample.txt").write_text("legacy C Viewer handoff\n")
+        sample = left / "sample.txt"
+        sample.write_text("legacy C Viewer handoff\n")
         (right / "other.txt").write_text("right pane\n")
 
         pid, fd = pty.fork()
@@ -66,6 +67,11 @@ def main():
             assert "Local Filesystem" in returned.text(), returned.text()
             assert "Viewer closed" in returned.text(), returned.text()
 
+            write(fd, b"\x1b[15~", delay=0.4, screen=returned)
+            assert "Copy complete" in returned.text(), returned.text()
+            assert (right / "sample.txt").read_bytes() == sample.read_bytes()
+            assert returned.text().count("sample.txt") >= 2, returned.text()
+
             resize(fd, 60, 15)
             time.sleep(0.15)
             resized = TerminalScreen(60, 15)
@@ -78,7 +84,7 @@ def main():
         finally:
             stop_nav(pid, fd, exited)
 
-    print("nav-rs panes, navigation, C Viewer handoff, resize, and exit: passed")
+    print("nav-rs navigation, C Viewer handoff, background copy, and exit: passed")
 
 
 if __name__ == "__main__":

@@ -40,12 +40,6 @@ fn command_for_resource(
     kind: EntryKind,
     helper: &Path,
 ) -> io::Result<Command> {
-    if kind != EntryKind::File {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the C Viewer bridge currently supports regular local files only",
-        ));
-    }
     let _local = provider
         .as_any()
         .downcast_ref::<LocalProvider>()
@@ -55,6 +49,14 @@ fn command_for_resource(
                 "the C Viewer bridge currently supports local resources only",
             )
         })?;
+    let viewable = kind == EntryKind::File
+        || (kind == EntryKind::Symlink && provider.stat_target(resource)?.kind == EntryKind::File);
+    if !viewable {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the C Viewer bridge supports files and file symlinks only",
+        ));
+    }
     let path = LocalProvider::path_for_resource(resource);
     let mut command = Command::new(helper);
     command.arg(path.into_os_string());
@@ -96,6 +98,36 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             [resource.as_os_str()]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn viewer_command_accepts_a_validated_file_symlink() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("nav-viewer-link-{suffix}"));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("target.txt"), b"target").unwrap();
+        let link = root.join("linked-file.txt");
+        symlink(root.join("target.txt"), &link).unwrap();
+        let resource = ResourceId::from_provider(link.into_os_string());
+        let request = request(resource);
+        assert!(
+            command_for_resource(
+                request.provider.as_ref(),
+                &request.entry.resource,
+                EntryKind::Symlink,
+                Path::new("viewer-helper"),
+            )
+            .is_ok()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

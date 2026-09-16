@@ -21,6 +21,10 @@ make rust-check
 - `ResourceId` stores an `OsString`, keeping local filesystem identity lossless;
   UTF-8 conversion is confined to presentation. Existing entries are opened
   through their provider-supplied resource IDs rather than reconstructed names.
+- Startup uses `args_os`, and `LocationInput` distinguishes provider text from
+  native local paths. The current directory and command-line filesystem paths
+  therefore reach `LocalProvider` without a UTF-8 conversion. `ResourceName`
+  likewise preserves a local leaf name when constructing a copy destination.
 - `LocalProvider` implements listing and the local primitives needed by later
   file-operation jobs. It is the only layer that translates resources into
   `PathBuf` values or reads `std::fs` metadata. Resolution makes paths absolute
@@ -31,17 +35,22 @@ make rust-check
 - `viewer_bridge` launches the existing C Viewer in the `nav-viewer-c` helper
   process. The boundary is one local path argument; no C Viewer structs or
   ownership cross into Rust.
+- `JobManager` owns process-lifetime job information and one active cancellation
+  token. A worker thread sends typed messages over a bounded standard-library
+  channel; only the UI thread updates application state or renders.
+- `transfer` owns the provider-neutral streaming loop. Providers supply
+  `open_read` and `open_write`; the transfer layer moves data with a reusable
+  128 KiB buffer and reports monotonic byte progress.
 
-The intended long-operation boundary remains `UI -> commands/jobs -> providers
--> I/O`. Copy is deliberately not a provider operation: future transfers will
-combine a source provider/resource with a destination provider/resource, with
-any server-side copy exposed only as an optimization. No async runtime is
-present because this milestone performs no network or transfer work.
+The long-operation boundary is `UI -> commands/jobs -> providers -> I/O`. Copy
+is deliberately not a provider operation: a transfer combines a source
+provider/resource stream with a destination provider/resource stream. A future
+same-provider server-side copy can be an advertised optimization without
+replacing this generic path. No async runtime is present.
 
 The event loop polls Crossterm with a bounded timeout, redraws only after state
-changes, and invokes a non-blocking background-service hook. A future channel-
-backed job service can therefore deliver progress/results without coupling the
-UI to Tokio or leaving input blocked indefinitely.
+changes, and drains job messages without blocking. The bounded channel prevents
+an especially fast producer from growing an unbounded progress backlog.
 
 ## Current behavior
 
@@ -56,18 +65,32 @@ geometry and redraw the screen. Each pane caches its filtered/sorted visible
 indices, so rendering a viewport does not repeatedly scan from the start of a
 large directory listing.
 
+F5 starts a local-to-local file copy into the opposite pane under the same leaf
+name. The worker streams the file while navigation, pane switching and terminal
+resize remain responsive; the status line shows byte and percentage progress.
+The destination pane refreshes after completion. One transfer may be active at
+a time, and Escape requests cancellation. Incomplete destinations created by a
+cancelled or failed job are removed. Existing destinations are never
+overwritten in this milestone, which makes that cleanup policy deterministic.
+
 Opening a regular local file or pressing F3 launches `nav-viewer-c`, which wraps
 the mature C Viewer. Rust first restores its terminal, waits for the helper, then
 re-enters raw/alternate-screen mode and forces a complete redraw. This recovery
 also runs when the helper fails to start or exits with an error. Directories,
 non-local providers and non-regular resources produce a status message instead.
+Local symlinks are inspected only when an operation needs their target type:
+file symlinks can be viewed, while directory symlinks can be navigated without
+canonicalizing their displayed location.
 
 The helper reuses `src/view/*` unchanged and adds only a thin entry point in
 `src/ui/viewer.c` plus `src/viewer-helper/main.c`. Its current bridge accepts
 local files only; remote materialization/caching is deliberately deferred. F4
-and file copy/move/delete/mkdir commands remain visually present but inactive.
-Configuration integration, external editing, jobs, transfers, HTTP, SMB,
-authentication and vault compatibility are also deferred.
+and move/delete/mkdir commands remain visually present but inactive.
+Configuration integration, external editing, recursive copy, overwrite
+confirmation, multiple concurrent jobs, HTTP, SMB, authentication and vault
+compatibility are also deferred. Future move behavior is rename when supported
+by the same provider, otherwise copy followed by source deletion only after a
+successful transfer.
 
 ## Dependency and license review
 
