@@ -114,11 +114,21 @@ LDFLAGS += -Wl,--gc-sections
 endif
 APP_BINARY ?= nav
 
-SOURCES := $(filter-out %_win32.c src/platform/windows.c,$(shell find src -name '*.c' | sort))
+SOURCES := $(filter-out %_win32.c src/platform/windows.c src/viewer-helper/main.c,$(shell find src -name '*.c' | sort))
 OBJECTS := $(SOURCES:src/%.c=$(OBJECT_DIR)/%.o)
 DEPS := $(OBJECTS:.o=.d) $(OBJECT_DIR)/toml.d
 INPUT_SOURCES := $(wildcard src/input/*.c)
 SODIUM_OBJECTS := $(OBJECT_DIR)/credential/vault.o
+VIEWER_HELPER_OBJECT_DIR := build/viewer-helper/objects
+VIEWER_HELPER_SOURCES := src/viewer-helper/main.c src/ui/viewer.c \
+	src/view/viewer.c src/view/source.c src/provider/local.c src/path.c \
+	src/terminal/termbox_backend.c src/terminal/termbox_input.c \
+	src/platform/cp437.c src/platform/posix.c src/platform/external_url.c \
+	src/config.c src/theme.c src/symbols.c src/commander.c src/clipboard.c \
+	src/ui/shell.c src/ui/layout.c src/ui/widgets.c $(INPUT_SOURCES) \
+	$(wildcard src/ui/core/*.c)
+VIEWER_HELPER_OBJECTS := $(VIEWER_HELPER_SOURCES:src/%.c=$(VIEWER_HELPER_OBJECT_DIR)/%.o)
+DEPS += $(VIEWER_HELPER_OBJECTS:.o=.d)
 
 -include $(DEPS)
 
@@ -134,6 +144,22 @@ version-test: version-header
 $(APP_BINARY): $(OBJECTS) $(OBJECT_DIR)/toml.o $(LINUX_ARCHIVES) | verify-curl verify-libsodium verify-libsmb2
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $(OBJECTS) $(OBJECT_DIR)/toml.o $(LDLIBS)
+
+.PHONY: viewer-helper
+viewer-helper: nav-viewer-c
+rust: nav-viewer-c
+rust-check: nav-viewer-c
+
+nav-viewer-c: $(VIEWER_HELPER_OBJECTS) $(VIEWER_HELPER_OBJECT_DIR)/toml.o
+	$(CC) $(LDFLAGS) -Wl,--gc-sections -o $@ $^ -pthread
+
+$(VIEWER_HELPER_OBJECT_DIR)/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DNAV_VIEWER_HELPER_BUILD -ffunction-sections -fdata-sections -c $< -o $@
+
+$(VIEWER_HELPER_OBJECT_DIR)/toml.o: third_party/toml.c third_party/toml.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
 
 build:
 	mkdir -p $@
@@ -336,7 +362,7 @@ asan-check:
 
 clean:
 	@test ! -d build || find build -mindepth 1 -maxdepth 1 ! -name linux-deps ! -name .linux-deps.lock ! -name windows -exec rm -rf {} +
-	rm -f nav nav-rs
+	rm -f nav nav-rs nav-viewer-c
 
 endif
 include cmake/release.mk

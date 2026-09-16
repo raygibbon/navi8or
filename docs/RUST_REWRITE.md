@@ -18,11 +18,19 @@ make rust-check
 - `Provider` describes operations using opaque `ResourceId` values and
   Navi8or-owned `Entry`/`ResourceMetadata` types without a C vtable,
   filesystem type, or UI/runtime dependency.
+- `ResourceId` stores an `OsString`, keeping local filesystem identity lossless;
+  UTF-8 conversion is confined to presentation. Existing entries are opened
+  through their provider-supplied resource IDs rather than reconstructed names.
 - `LocalProvider` implements listing and the local primitives needed by later
   file-operation jobs. It is the only layer that translates resources into
-  `PathBuf` values or reads `std::fs` metadata.
+  `PathBuf` values or reads `std::fs` metadata. Resolution makes paths absolute
+  and normalizes `.` and `..` lexically without canonicalizing or dereferencing
+  symlinks.
 - `terminal` owns Crossterm startup/shutdown, keyboard and resize events, and
   Navi8or-specific DOS-style rendering.
+- `viewer_bridge` launches the existing C Viewer in the `nav-viewer-c` helper
+  process. The boundary is one local path argument; no C Viewer structs or
+  ownership cross into Rust.
 
 The intended long-operation boundary remains `UI -> commands/jobs -> providers
 -> I/O`. Copy is deliberately not a provider operation: future transfers will
@@ -44,13 +52,22 @@ Ctrl+Q and F10 provide the initial navigation and lifecycle controls. Alt+Left
 and Alt+Right traverse pane history, while Ctrl+U swaps panes. Provider-neutral
 sorting and filtering preserve selection; refresh and hidden-file changes retain
 the selected resource when it remains visible. Resize events recompute pane
-geometry and redraw the screen.
+geometry and redraw the screen. Each pane caches its filtered/sorted visible
+indices, so rendering a viewport does not repeatedly scan from the start of a
+large directory listing.
 
-Opening a regular file reports that the Viewer is deferred. F3/F4 and file
-copy/move/delete/mkdir commands are displayed for visual continuity but are not
-active in this milestone. Configuration, TOML themes, external editing, jobs,
-transfers, HTTP, SMB, authentication and vault compatibility are also deferred.
-No files under `src/view/` or existing C Viewer behavior are used or changed.
+Opening a regular local file or pressing F3 launches `nav-viewer-c`, which wraps
+the mature C Viewer. Rust first restores its terminal, waits for the helper, then
+re-enters raw/alternate-screen mode and forces a complete redraw. This recovery
+also runs when the helper fails to start or exits with an error. Directories,
+non-local providers and non-regular resources produce a status message instead.
+
+The helper reuses `src/view/*` unchanged and adds only a thin entry point in
+`src/ui/viewer.c` plus `src/viewer-helper/main.c`. Its current bridge accepts
+local files only; remote materialization/caching is deliberately deferred. F4
+and file copy/move/delete/mkdir commands remain visually present but inactive.
+Configuration integration, external editing, jobs, transfers, HTTP, SMB,
+authentication and vault compatibility are also deferred.
 
 ## Dependency and license review
 

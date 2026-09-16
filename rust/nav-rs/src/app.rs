@@ -21,6 +21,7 @@ pub enum Command {
     PageUp,
     PageDown,
     Open,
+    View,
     Parent,
     SwitchPane,
     SwapPanes,
@@ -38,6 +39,7 @@ pub struct Pane {
     provider: Arc<dyn Provider>,
     pub location: Location,
     entries: Vec<Entry>,
+    visible_indices: Vec<usize>,
     pub selected: usize,
     pub offset: usize,
     pub viewport_rows: usize,
@@ -55,6 +57,7 @@ impl Pane {
             provider,
             location: location.clone(),
             entries,
+            visible_indices: Vec::new(),
             selected: 0,
             offset: 0,
             viewport_rows: 1,
@@ -64,6 +67,7 @@ impl Pane {
             history_index: 0,
         };
         pane.sort_entries();
+        pane.rebuild_visible_indices();
         Ok(pane)
     }
 
@@ -76,17 +80,13 @@ impl Pane {
     }
 
     pub fn visible_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|entry| self.entry_visible(entry))
-            .count()
+        self.visible_indices.len()
     }
 
     pub fn visible_entry(&self, visible_index: usize) -> Option<&Entry> {
-        self.entries
-            .iter()
-            .filter(|entry| self.entry_visible(entry))
-            .nth(visible_index)
+        self.visible_indices
+            .get(visible_index)
+            .and_then(|index| self.entries.get(*index))
     }
 
     pub fn selected_entry(&self) -> Option<&Entry> {
@@ -117,6 +117,7 @@ impl Pane {
     pub fn set_filter(&mut self, filter: impl Into<String>) {
         let selected = self.selected_entry().map(|entry| entry.resource.clone());
         self.filter = filter.into();
+        self.rebuild_visible_indices();
         self.restore_selection(selected.as_ref());
     }
 
@@ -124,6 +125,7 @@ impl Pane {
         let selected = self.selected_entry().map(|entry| entry.resource.clone());
         self.sort_mode = mode;
         self.sort_entries();
+        self.rebuild_visible_indices();
         self.restore_selection(selected.as_ref());
     }
 
@@ -133,6 +135,7 @@ impl Pane {
             .provider
             .list(&self.location, &ListOptions { show_hidden })?;
         self.sort_entries();
+        self.rebuild_visible_indices();
         self.restore_selection(selected.as_ref());
         Ok(())
     }
@@ -155,7 +158,7 @@ impl Pane {
                 Ok(true)
             }
             EntryKind::Directory => {
-                let location = self.provider.child(&self.location, &entry.name)?;
+                let location = self.provider.location(&entry.resource)?;
                 self.load(location, show_hidden, true)?;
                 Ok(true)
             }
@@ -192,6 +195,7 @@ impl Pane {
         sort_entries(&mut entries, self.sort_mode);
         self.location = location;
         self.entries = entries;
+        self.rebuild_visible_indices();
         self.selected = 0;
         self.offset = 0;
         if add_history {
@@ -212,21 +216,25 @@ impl Pane {
         self.history_index = self.history.len() - 1;
     }
 
-    fn entry_visible(&self, entry: &Entry) -> bool {
-        self.filter.is_empty() || entry.name.contains(&self.filter)
-    }
-
     fn sort_entries(&mut self) {
         sort_entries(&mut self.entries, self.sort_mode);
+    }
+
+    fn rebuild_visible_indices(&mut self) {
+        self.visible_indices.clear();
+        for (index, entry) in self.entries.iter().enumerate() {
+            if self.filter.is_empty() || entry.name.contains(&self.filter) {
+                self.visible_indices.push(index);
+            }
+        }
     }
 
     fn restore_selection(&mut self, resource: Option<&ResourceId>) {
         self.selected = resource
             .and_then(|resource| {
-                self.entries
+                self.visible_indices
                     .iter()
-                    .filter(|entry| self.entry_visible(entry))
-                    .position(|entry| &entry.resource == resource)
+                    .position(|index| &self.entries[*index].resource == resource)
             })
             .unwrap_or(0);
         self.ensure_visible();
@@ -246,6 +254,12 @@ impl Pane {
             self.offset = self.selected + 1 - self.viewport_rows;
         }
     }
+}
+
+#[derive(Clone)]
+pub struct ViewerRequest {
+    pub provider: Arc<dyn Provider>,
+    pub entry: Entry,
 }
 
 fn sort_entries(entries: &mut [Entry], mode: SortMode) {
@@ -281,6 +295,7 @@ pub struct AppState {
     pub running: bool,
     pub show_hidden: bool,
     pub status: String,
+    viewer_request: Option<ViewerRequest>,
 }
 
 impl AppState {
@@ -291,6 +306,7 @@ impl AppState {
             running: true,
             show_hidden: false,
             status: "Ready".into(),
+            viewer_request: None,
         }
     }
 
@@ -304,6 +320,10 @@ impl AppState {
     /// Hook for future channel-backed jobs. It is deliberately non-blocking.
     pub fn service_background_work(&mut self) -> bool {
         false
+    }
+
+    pub fn take_viewer_request(&mut self) -> Option<ViewerRequest> {
+        self.viewer_request.take()
     }
 
     pub fn dispatch(&mut self, command: Command) {
@@ -362,11 +382,32 @@ impl AppState {
             Command::Open => match pane.activate(self.show_hidden) {
                 Ok(true) => Ok(()),
                 Ok(false) => {
-                    self.status = "Viewer intentionally deferred in nav-rs".into();
+                    self.viewer_request =
+                        pane.selected_entry().cloned().map(|entry| ViewerRequest {
+                            provider: pane.provider.clone(),
+                            entry,
+                        });
                     Ok(())
                 }
                 Err(error) => Err(error),
             },
+            Command::View => {
+                self.viewer_request = None;
+                match pane.selected_entry() {
+                    Some(entry) if entry.kind == EntryKind::File => {
+                        self.viewer_request = Some(ViewerRequest {
+                            provider: pane.provider.clone(),
+                            entry: entry.clone(),
+                        });
+                        Ok(())
+                    }
+                    Some(_) => Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "The C Viewer bridge supports regular local files only",
+                    )),
+                    None => Err(io::Error::new(io::ErrorKind::NotFound, "No entry selected")),
+                }
+            }
             Command::Parent => pane.parent(self.show_hidden),
             Command::HistoryBack => pane.history_back(self.show_hidden),
             Command::HistoryForward => pane.history_forward(self.show_hidden),
@@ -404,7 +445,7 @@ mod tests {
     impl MemoryProvider {
         fn location(name: &str) -> Location {
             Location {
-                resource: ResourceId::from_provider(name.into()),
+                resource: ResourceId::from_provider(name),
                 display: format!("memory://{name}"),
             }
         }
@@ -412,7 +453,7 @@ mod tests {
         fn entry(name: &str, resource: &str, kind: EntryKind, size: u64) -> Entry {
             Entry {
                 name: name.into(),
-                resource: ResourceId::from_provider(resource.into()),
+                resource: ResourceId::from_provider(resource),
                 kind,
                 size: Some(size),
                 modified: None,
@@ -421,6 +462,10 @@ mod tests {
     }
 
     impl Provider for MemoryProvider {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         fn scheme(&self) -> &'static str {
             "memory"
         }
@@ -437,8 +482,12 @@ mod tests {
             Ok(Self::location(input))
         }
 
+        fn location(&self, resource: &ResourceId) -> io::Result<Location> {
+            Ok(Self::location(&resource.as_os_str().to_string_lossy()))
+        }
+
         fn parent(&self, location: &Location) -> io::Result<Option<Location>> {
-            Ok((location.resource.as_str() != "root").then(|| Self::location("root")))
+            Ok((location.resource.as_os_str() != "root").then(|| Self::location("root")))
         }
 
         fn child(&self, _location: &Location, name: &str) -> io::Result<Location> {
@@ -446,11 +495,11 @@ mod tests {
         }
 
         fn list(&self, location: &Location, options: &ListOptions) -> io::Result<Vec<Entry>> {
-            Ok(if location.resource.as_str() == "root" {
+            Ok(if location.resource.as_os_str() == "root" {
                 let mut entries = vec![
                     Self::entry("large.txt", "large", EntryKind::File, 50),
                     Self::entry("..", "root", EntryKind::Parent, 0),
-                    Self::entry("child", "child", EntryKind::Directory, 0),
+                    Self::entry("visible-child", "child", EntryKind::Directory, 0),
                     Self::entry("small.txt", "small", EntryKind::File, 5),
                 ];
                 if options.show_hidden {
@@ -460,7 +509,7 @@ mod tests {
             } else {
                 vec![Self::entry(
                     "..",
-                    location.resource.as_str(),
+                    &location.resource.as_os_str().to_string_lossy(),
                     EntryKind::Parent,
                     0,
                 )]
@@ -481,7 +530,7 @@ mod tests {
         let mut pane = pane();
         assert_eq!(pane.location.display, "memory://root");
         pane.move_selection(1);
-        assert_eq!(pane.selected_entry().unwrap().name, "child");
+        assert_eq!(pane.selected_entry().unwrap().name, "visible-child");
         assert!(pane.activate(false).unwrap());
         assert_eq!(pane.location.display, "memory://child");
         pane.history_back(false).unwrap();
@@ -504,10 +553,11 @@ mod tests {
             .filter_map(|index| pane.visible_entry(index))
             .map(|entry| entry.name.as_str())
             .collect();
-        assert_eq!(names, ["..", "child", "small.txt", "large.txt"]);
+        assert_eq!(names, ["..", "visible-child", "small.txt", "large.txt"]);
 
         pane.set_filter("large");
         assert_eq!(pane.visible_count(), 1);
+        assert_eq!(pane.visible_indices.len(), 1);
         assert_eq!(pane.selected_entry().unwrap().name, "large.txt");
         pane.refresh(false).unwrap();
         assert_eq!(pane.selected_entry().unwrap().name, "large.txt");
@@ -538,5 +588,16 @@ mod tests {
         for pane in &app.panes {
             assert!(pane.entries().iter().any(|entry| entry.name == ".secret"));
         }
+    }
+
+    #[test]
+    fn viewer_rejects_non_files_with_a_clear_status() {
+        let mut app = AppState::new([pane(), pane()]);
+        app.dispatch(Command::View);
+        assert_eq!(
+            app.status,
+            "The C Viewer bridge supports regular local files only"
+        );
+        assert!(app.take_viewer_request().is_none());
     }
 }

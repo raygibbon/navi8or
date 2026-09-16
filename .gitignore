@@ -3,6 +3,7 @@ build/
 dist/
 /nav
 /nav-rs
+/nav-viewer-c
 /target/
 *.o
 *.d

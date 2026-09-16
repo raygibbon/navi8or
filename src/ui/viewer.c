@@ -31,6 +31,8 @@ struct NavPaneViewer
 };
 typedef struct NavPaneViewer ViewerScreen;
 
+static void render_viewer(ViewerScreen *);
+
 #define VIEW_ITEM(label, command, key) {label, command, NULL, false, false, key}
 #define VIEW_SEPARATOR {NULL, 0, NULL, true, true, 0}
 static const NavUiMenuItem viewer_file_items[] = {
@@ -191,10 +193,26 @@ static void draw_viewer(void *data)
     screen->redraw(screen->redraw_data);
 }
 
+static void draw_standalone_viewer(void *data)
+{
+    ViewerScreen *screen = data;
+    NavShellLayout layout = nav_shell_layout_for_config(
+        nav_term_width(), nav_term_height(), screen->config);
+    nav_term_clear(NAV_STYLE_BACKGROUND);
+    if (screen->config->show_menu)
+        nav_ui_draw_menu_bar(screen->menus,
+                             sizeof screen->menus / sizeof *screen->menus);
+    render_viewer(screen);
+    if (screen->config->show_function_bar)
+        nav_ui_command_bar(layout.command_row, layout.width,
+                           NAV_CONTEXT_VIEWER, NULL, NULL);
+    nav_term_present();
+}
+
 static void render_viewer(ViewerScreen *screen)
 {
     NavViewer *viewer = &screen->viewer;
-    bool active = screen->app->active == screen->pane;
+    bool active = !screen->app || screen->app->active == screen->pane;
     bool cursor_mode = viewer->source->cursor_line != NULL;
     size_t count = cursor_mode ? 0 : viewer->source->line_count(viewer->source);
     int width = nav_term_width(), height = nav_term_height();
@@ -423,9 +441,10 @@ static void viewer_release(NavViewer *viewer, NavProvider *provider, bool owned)
     if (owned) nav_provider_destroy(provider);
 }
 
+#ifndef NAV_VIEWER_HELPER_BUILD
 static void viewer_follow(ViewerScreen *screen, const char *url, bool download)
 {
-    if (!screen->app) { snprintf(screen->viewer.status, sizeof screen->viewer.status, "Link actions need a Commander origin"); return; }
+    if (!screen->app || !screen->origin) { snprintf(screen->viewer.status, sizeof screen->viewer.status, "Link actions need a Commander origin"); return; }
     NavEntry entry; bool directory, owned;
     char error[256] = {0};
     NavProvider *provider = nav_location_resolve(screen->app, url, &entry, &directory, &owned, error, sizeof error);
@@ -476,6 +495,13 @@ static void viewer_open_link(ViewerScreen *screen)
     default: break;
     }
 }
+#else
+static void viewer_open_link(ViewerScreen *screen)
+{
+    snprintf(screen->viewer.status, sizeof screen->viewer.status,
+             "Link actions need a Commander origin");
+}
+#endif
 
 static bool viewer_dispatch(ViewerScreen *, NavCommand);
 static bool viewer_menu(ViewerScreen *screen)
@@ -528,7 +554,12 @@ static bool viewer_dispatch(ViewerScreen *screen, NavCommand command)
         } else snprintf(screen->viewer.status, sizeof screen->viewer.status, "No Viewer history");
         break;
     case NAV_CMD_DOWNLOAD:
+#ifndef NAV_VIEWER_HELPER_BUILD
         if (screen->origin) nav_ui_download(screen->app, screen->provider, screen->entry, screen->origin, screen->config, draw_viewer, screen);
+#else
+        snprintf(screen->viewer.status, sizeof screen->viewer.status,
+                 "Download needs a Commander origin");
+#endif
         break;
     case NAV_CMD_UP: nav_viewer_move(&screen->viewer, -1, page); break;
     case NAV_CMD_DOWN: nav_viewer_move(&screen->viewer, 1, page); break;
@@ -646,4 +677,81 @@ void nav_ui_viewer_dispatch(NavApp *app, NavCommand command)
 {
     NavPane *pane = &app->panes[app->active];
     if (pane->viewer && viewer_dispatch(pane->viewer, command)) nav_ui_viewer_close(pane);
+}
+
+int nav_ui_viewer_run_local_file(const char *path, const NavConfig *config,
+                                 char *error, size_t error_size)
+{
+    NavProvider *provider = nav_local_provider();
+    NavLocation location;
+    NavEntry entry;
+    NavViewSource *source;
+    ViewerScreen screen;
+    bool binary = false, terminal_active = false;
+    int result = -1;
+
+    if (!path || !config || !error || error_size == 0) return -1;
+    error[0] = 0;
+    if (provider->location(provider, path, &location, error, error_size) ||
+        provider->stat(provider, location.resource_id, &entry, error,
+                       error_size))
+        return -1;
+    if (entry.flags & NAV_ENTRY_DIR) {
+        snprintf(error, error_size, "Viewer requires a regular file");
+        return -1;
+    }
+    source = nav_view_source_open_provider(provider, entry.resource_id,
+                                           &binary, error, error_size);
+    if (!source) {
+        if (binary)
+            snprintf(error, error_size,
+                     "This resource does not appear to be text");
+        else if (!error[0])
+            snprintf(error, error_size, "Unable to open resource");
+        return -1;
+    }
+
+    memset(&screen, 0, sizeof screen);
+    screen.provider = provider;
+    screen.resource = entry;
+    screen.entry = &screen.resource;
+    screen.config = config;
+    screen.highlight_current = config->viewer_current_line;
+    screen.fullscreen = true;
+    screen.redraw = draw_standalone_viewer;
+    screen.redraw_data = &screen;
+    memcpy(screen.menus, viewer_menus, sizeof screen.menus);
+    nav_viewer_init(&screen.viewer, source);
+    screen.viewer.line_numbers = config->viewer_line_numbers;
+    screen.viewer.wrap = config->viewer_wrap;
+
+    nav_ui_input_configure(config);
+    nav_ui_workspace(NAV_CONTEXT_VIEWER);
+    nav_platform_console_signals();
+    nav_term_set_theme(&config->profile);
+    if (nav_term_init() < 0) {
+        snprintf(error, error_size, "terminal initialization failed");
+        goto cleanup;
+    }
+    terminal_active = true;
+    for (;;) {
+        NavAction action;
+        draw_standalone_viewer(&screen);
+        if (nav_ui_input(NAV_CONTEXT_VIEWER, &action) <= 0)
+            continue;
+        if (action.type == NAV_TERM_EVENT_RESIZE)
+            continue;
+        if (action.type == NAV_TERM_EVENT_KEY &&
+            viewer_dispatch(&screen, action.command))
+            break;
+    }
+    result = 0;
+
+cleanup:
+    if (terminal_active) nav_term_shutdown();
+    viewer_release(&screen.viewer, provider, false);
+    for (size_t i = 0; i < screen.history_count; i++)
+        viewer_release(&screen.history[i].viewer, screen.history[i].provider,
+                       screen.history[i].owned);
+    return result;
 }

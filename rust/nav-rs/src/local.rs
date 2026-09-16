@@ -22,11 +22,11 @@ impl LocalProvider {
     }
 
     fn resource_for_path(path: &Path) -> ResourceId {
-        ResourceId::from_provider(path.to_string_lossy().into_owned())
+        ResourceId::from_provider(path.as_os_str())
     }
 
-    fn path_for_resource(resource: &ResourceId) -> PathBuf {
-        PathBuf::from(resource.as_str())
+    pub(crate) fn path_for_resource(resource: &ResourceId) -> PathBuf {
+        PathBuf::from(resource.as_os_str())
     }
 
     fn path_for_location(location: &Location) -> PathBuf {
@@ -53,6 +53,10 @@ impl LocalProvider {
 }
 
 impl Provider for LocalProvider {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn scheme(&self) -> &'static str {
         "local"
     }
@@ -72,7 +76,17 @@ impl Provider for LocalProvider {
     }
 
     fn resolve(&self, input: &str) -> io::Result<Location> {
-        Ok(Self::location_for_path(Path::new(input).canonicalize()?))
+        let path = Path::new(input);
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        Ok(Self::location_for_path(normalize_lexically(&absolute)))
+    }
+
+    fn location(&self, resource: &ResourceId) -> io::Result<Location> {
+        Ok(Self::location_for_path(Self::path_for_resource(resource)))
     }
 
     fn parent(&self, location: &Location) -> io::Result<Option<Location>> {
@@ -169,6 +183,24 @@ impl Provider for LocalProvider {
     }
 }
 
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
 fn compare_entries(left: &Entry, right: &Entry) -> Ordering {
     match (left.kind, right.kind) {
         (EntryKind::Parent, EntryKind::Parent) => Ordering::Equal,
@@ -252,6 +284,51 @@ mod tests {
                 .any(|entry| entry.name == ".secret")
         );
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resource_identity_preserves_non_utf8_names() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = fixture();
+        let name = std::ffi::OsString::from_vec(b"non-utf8-\xff".to_vec());
+        let path = root.join(&name);
+        fs::write(&path, b"identity").unwrap();
+        let provider = LocalProvider::new();
+        let location = provider.resolve(root.to_str().unwrap()).unwrap();
+        let entries = provider.list(&location, &ListOptions::default()).unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| LocalProvider::path_for_resource(&entry.resource) == path)
+            .expect("lossless resource identity");
+        assert_eq!(
+            LocalProvider::path_for_resource(&entry.resource).as_os_str(),
+            path.as_os_str()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lexical_resolution_does_not_dereference_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture();
+        let real = root.join("real");
+        let link = root.join("link");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, &link).unwrap();
+        let provider = LocalProvider::new();
+        let location = provider.resolve(link.to_str().unwrap()).unwrap();
+        assert_eq!(LocalProvider::path_for_resource(&location.resource), link);
+
+        let parent = provider
+            .resolve(&format!("{}/link/..", root.display()))
+            .unwrap();
+        assert_eq!(LocalProvider::path_for_resource(&parent.resource), root);
         fs::remove_dir_all(root).unwrap();
     }
 }

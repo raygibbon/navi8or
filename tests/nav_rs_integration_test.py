@@ -20,7 +20,7 @@ def main():
         child = left / "child"
         child.mkdir(parents=True)
         right.mkdir()
-        (left / "sample.txt").write_text("viewer remains deferred\n")
+        (left / "sample.txt").write_text("legacy C Viewer handoff\n")
         (right / "other.txt").write_text("right pane\n")
 
         pid, fd = pty.fork()
@@ -52,6 +52,20 @@ def main():
             write(fd, b"\x7f", screen=screen)
             assert str(left) in screen.text(), screen.text()
 
+            write(fd, DOWN, screen=screen)
+            write(fd, DOWN, screen=screen)
+            viewer_output = write(fd, b"\x1bOR", delay=0.4)
+            viewer = TerminalScreen(100, 30)
+            viewer.feed(viewer_output)
+            assert "legacy C Viewer handoff" in viewer.text(), viewer.text()
+            assert "Close" in viewer.text(), viewer.text()
+
+            returned_output = write(fd, b"\x1b", delay=0.4)
+            returned = TerminalScreen(100, 30)
+            returned.feed(returned_output)
+            assert "Local Filesystem" in returned.text(), returned.text()
+            assert "Viewer closed" in returned.text(), returned.text()
+
             resize(fd, 60, 15)
             time.sleep(0.15)
             resized = TerminalScreen(60, 15)
@@ -64,9 +78,8 @@ def main():
         finally:
             stop_nav(pid, fd, exited)
 
-    print("nav-rs local panes, navigation, resize, pane switch, and clean exit: passed")
+    print("nav-rs panes, navigation, C Viewer handoff, resize, and exit: passed")
 
 
 if __name__ == "__main__":
     main()
-

@@ -1,4 +1,4 @@
-use crate::{AppState, Command, Entry, EntryKind, Pane, SortMode};
+use crate::{AppState, Command, Entry, EntryKind, Pane, SortMode, viewer_bridge};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::{
@@ -31,6 +31,14 @@ pub fn run(app: &mut AppState) -> io::Result<()> {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     if let Some(command) = command_for_key(key) {
                         app.dispatch(command);
+                        if let Some(request) = app.take_viewer_request() {
+                            let result = terminal.suspended(|| viewer_bridge::launch(&request));
+                            app.status = match result {
+                                Ok(status) if status.success() => "Viewer closed".into(),
+                                Ok(status) => format!("Viewer helper exited with {status}"),
+                                Err(error) => format!("Unable to open Viewer: {error}"),
+                            };
+                        }
                         redraw = true;
                     }
                 }
@@ -51,6 +59,7 @@ fn command_for_key(key: KeyEvent) -> Option<Command> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::F(10) => Some(Command::Quit),
+        KeyCode::F(3) => Some(Command::View),
         KeyCode::Char('q' | 'Q') if control => Some(Command::Quit),
         KeyCode::Tab | KeyCode::BackTab => Some(Command::SwitchPane),
         KeyCode::Up => Some(Command::Up),
@@ -76,16 +85,33 @@ struct Terminal {
 
 impl Terminal {
     fn start() -> io::Result<Self> {
+        let output = io::stdout();
+        let mut terminal = Self {
+            output,
+            restored: true,
+        };
+        terminal.resume()?;
+        Ok(terminal)
+    }
+
+    fn resume(&mut self) -> io::Result<()> {
         enable_raw_mode()?;
-        let mut output = io::stdout();
-        if let Err(error) = execute!(output, EnterAlternateScreen, Hide) {
+        if let Err(error) = execute!(self.output, EnterAlternateScreen, Hide) {
             let _ = disable_raw_mode();
             return Err(error);
         }
-        Ok(Self {
-            output,
-            restored: false,
-        })
+        self.restored = false;
+        Ok(())
+    }
+
+    fn suspended<T>(&mut self, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        self.restore()?;
+        let operation_result = operation();
+        let resume_result = self.resume();
+        match (operation_result, resume_result) {
+            (_, Err(error)) => Err(error),
+            (result, Ok(())) => result,
+        }
     }
 
     fn draw(&mut self, app: &mut AppState) -> io::Result<()> {
@@ -150,25 +176,26 @@ impl Terminal {
         self.output.flush()
     }
 
-    fn restore(&mut self) {
+    fn restore(&mut self) -> io::Result<()> {
         if self.restored {
-            return;
+            return Ok(());
         }
-        let _ = execute!(
+        let screen_result = execute!(
             self.output,
             ResetColor,
             SetAttribute(Attribute::Reset),
             Show,
             LeaveAlternateScreen
         );
-        let _ = disable_raw_mode();
-        self.restored = true;
+        let raw_result = disable_raw_mode();
+        self.restored = screen_result.is_ok() && raw_result.is_ok();
+        screen_result.and(raw_result)
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        self.restore();
+        let _ = self.restore();
     }
 }
 
@@ -524,6 +551,10 @@ mod tests {
         assert_eq!(
             command_for_key(KeyEvent::new(KeyCode::F(10), plain)),
             Some(Command::Quit)
+        );
+        assert_eq!(
+            command_for_key(KeyEvent::new(KeyCode::F(3), plain)),
+            Some(Command::View)
         );
         assert_eq!(
             command_for_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),

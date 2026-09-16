@@ -24,6 +24,7 @@ bool nav_ui_repository_add_prefilled(NavApp *, NavRepository *, const char *);
 /* Returns 1 on success, transferring provider ownership only if owned=true;
  * never runs an input loop. Failure leaves provider ownership with the caller. */
 int nav_ui_viewer_open(NavApp *, NavProvider *, const NavEntry *, bool, NavUiRedrawFn, void *);
+int nav_ui_viewer_run_local_file(const char *, const NavConfig *, char *, size_t);
 void nav_ui_viewer_close(NavPane *);
 void nav_ui_viewer_draw(NavApp *, int);
 void nav_ui_viewer_dispatch(NavApp *, NavCommand);

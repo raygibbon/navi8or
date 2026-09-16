@@ -1,24 +1,26 @@
+use std::any::Any;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::time::SystemTime;
 
 /// Opaque identity meaningful only to the provider that created it.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ResourceId(String);
+pub struct ResourceId(OsString);
 
 impl ResourceId {
-    pub(crate) fn from_provider(value: String) -> Self {
-        Self(value)
+    pub(crate) fn from_provider(value: impl Into<OsString>) -> Self {
+        Self(value.into())
     }
 
-    pub fn as_str(&self) -> &str {
+    pub fn as_os_str(&self) -> &OsStr {
         &self.0
     }
 }
 
 impl fmt::Display for ResourceId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        self.0.to_string_lossy().fmt(formatter)
     }
 }
 
@@ -95,12 +97,14 @@ pub struct ListOptions {
 ///
 /// Blocking providers will eventually run behind a jobs boundary. The trait
 /// intentionally exposes neither local filesystem types nor an async runtime.
-pub trait Provider: Send + Sync {
+pub trait Provider: Any + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
     fn scheme(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
     fn capabilities(&self) -> Capabilities;
 
     fn resolve(&self, input: &str) -> io::Result<Location>;
+    fn location(&self, resource: &ResourceId) -> io::Result<Location>;
     fn parent(&self, location: &Location) -> io::Result<Option<Location>>;
     fn child(&self, location: &Location, name: &str) -> io::Result<Location>;
     fn list(&self, location: &Location, options: &ListOptions) -> io::Result<Vec<Entry>>;
