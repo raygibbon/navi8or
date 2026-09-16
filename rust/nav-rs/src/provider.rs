@@ -1,7 +1,33 @@
-use std::fs::Metadata;
+use std::fmt;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// Opaque identity meaningful only to the provider that created it.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ResourceId(String);
+
+impl ResourceId {
+    pub(crate) fn from_provider(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ResourceId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Provider identity and user-facing presentation are deliberately separate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Location {
+    pub resource: ResourceId,
+    pub display: String,
+}
 
 /// Provider features are queried by commands before work is started.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,7 +41,6 @@ impl Capabilities {
     pub const MKDIR: Self = Self(1 << 4);
     pub const DELETE: Self = Self(1 << 5);
     pub const RENAME: Self = Self(1 << 6);
-    pub const COPY: Self = Self(1 << 7);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -35,12 +60,21 @@ pub enum EntryKind {
     Parent,
     Directory,
     File,
+    Symlink,
+    Other,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceMetadata {
+    pub kind: EntryKind,
+    pub size: Option<u64>,
+    pub modified: Option<SystemTime>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub name: String,
-    pub resource: PathBuf,
+    pub resource: ResourceId,
     pub kind: EntryKind,
     pub size: Option<u64>,
     pub modified: Option<SystemTime>,
@@ -52,47 +86,51 @@ impl Entry {
     }
 }
 
-/// Synchronous provider operations used by the local core.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ListOptions {
+    pub show_hidden: bool,
+}
+
+/// Provider-neutral resource operations.
 ///
-/// Future network providers will execute these operations behind the jobs
-/// boundary rather than on the UI thread. The trait does not expose a runtime
-/// or couple application state to Tokio.
+/// Blocking providers will eventually run behind a jobs boundary. The trait
+/// intentionally exposes neither local filesystem types nor an async runtime.
 pub trait Provider: Send + Sync {
     fn scheme(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
     fn capabilities(&self) -> Capabilities;
 
-    fn location(&self, input: &Path) -> io::Result<PathBuf>;
-    fn parent(&self, location: &Path) -> io::Result<PathBuf>;
-    fn child(&self, location: &Path, name: &str) -> io::Result<PathBuf>;
-    fn list(&self, location: &Path, show_hidden: bool) -> io::Result<Vec<Entry>>;
+    fn resolve(&self, input: &str) -> io::Result<Location>;
+    fn parent(&self, location: &Location) -> io::Result<Option<Location>>;
+    fn child(&self, location: &Location, name: &str) -> io::Result<Location>;
+    fn list(&self, location: &Location, options: &ListOptions) -> io::Result<Vec<Entry>>;
 
-    fn stat(&self, _resource: &Path) -> io::Result<Metadata> {
+    fn stat(&self, _resource: &ResourceId) -> io::Result<ResourceMetadata> {
         Err(unsupported("stat"))
     }
 
-    fn open_read(&self, _resource: &Path) -> io::Result<Box<dyn Read + Send>> {
+    fn open_read(&self, _resource: &ResourceId) -> io::Result<Box<dyn Read + Send>> {
         Err(unsupported("read"))
     }
 
-    fn open_write(&self, _resource: &Path, _overwrite: bool) -> io::Result<Box<dyn Write + Send>> {
+    fn open_write(
+        &self,
+        _resource: &ResourceId,
+        _overwrite: bool,
+    ) -> io::Result<Box<dyn Write + Send>> {
         Err(unsupported("write"))
     }
 
-    fn mkdir(&self, _resource: &Path) -> io::Result<()> {
+    fn mkdir(&self, _resource: &ResourceId) -> io::Result<()> {
         Err(unsupported("mkdir"))
     }
 
-    fn delete(&self, _resource: &Path) -> io::Result<()> {
+    fn delete(&self, _resource: &ResourceId) -> io::Result<()> {
         Err(unsupported("delete"))
     }
 
-    fn rename(&self, _source: &Path, _destination: &Path) -> io::Result<()> {
+    fn rename(&self, _source: &ResourceId, _destination: &ResourceId) -> io::Result<()> {
         Err(unsupported("rename"))
-    }
-
-    fn copy(&self, _source: &Path, _destination: &Path) -> io::Result<u64> {
-        Err(unsupported("copy"))
     }
 }
 

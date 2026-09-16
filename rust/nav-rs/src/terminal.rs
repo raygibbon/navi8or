@@ -1,4 +1,4 @@
-use crate::{AppState, Command, Entry, EntryKind, Pane};
+use crate::{AppState, Command, Entry, EntryKind, Pane, SortMode};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::{
@@ -10,6 +10,7 @@ use crossterm::terminal::{
 };
 use crossterm::{execute, queue};
 use std::io::{self, Stdout, Write};
+use std::time::Duration;
 
 const DOS_BLUE: Color = Color::DarkBlue;
 const DOS_CYAN: Color = Color::Cyan;
@@ -18,24 +19,36 @@ pub fn run(app: &mut AppState) -> io::Result<()> {
     let mut terminal = Terminal::start()?;
     let (width, height) = terminal::size()?;
     app.resize(width, height);
+    let mut redraw = true;
 
     while app.running {
-        terminal.draw(app)?;
-        match event::read()? {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if let Some(command) = command_for_key(key) {
-                    app.dispatch(command);
-                }
-            }
-            Event::Resize(width, height) => app.resize(width, height),
-            _ => {}
+        if redraw {
+            terminal.draw(app)?;
+            redraw = false;
         }
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if let Some(command) = command_for_key(key) {
+                        app.dispatch(command);
+                        redraw = true;
+                    }
+                }
+                Event::Resize(width, height) => {
+                    app.resize(width, height);
+                    redraw = true;
+                }
+                _ => {}
+            }
+        }
+        redraw |= app.service_background_work();
     }
     Ok(())
 }
 
 fn command_for_key(key: KeyEvent) -> Option<Command> {
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::F(10) => Some(Command::Quit),
         KeyCode::Char('q' | 'Q') if control => Some(Command::Quit),
@@ -48,6 +61,9 @@ fn command_for_key(key: KeyEvent) -> Option<Command> {
         KeyCode::PageDown => Some(Command::PageDown),
         KeyCode::Enter => Some(Command::Open),
         KeyCode::Backspace => Some(Command::Parent),
+        KeyCode::Left if alt => Some(Command::HistoryBack),
+        KeyCode::Right if alt => Some(Command::HistoryForward),
+        KeyCode::Char('u' | 'U') if control => Some(Command::SwapPanes),
         KeyCode::Char('r' | 'R') if control => Some(Command::Refresh),
         _ => None,
     }
@@ -215,27 +231,41 @@ fn draw_pane(
         x,
         layout.location_row,
         width,
-        &path_text(
-            &pane.location.to_string_lossy(),
-            width.saturating_sub(2) as usize,
-        ),
+        &path_text(&pane.location.display, width.saturating_sub(2) as usize),
         Style::Path,
     )?;
-    text(output, x, layout.header_row, width, " Name", Style::Header)?;
+    let name_header = if pane.sort_mode == SortMode::Name {
+        " Name ^"
+    } else {
+        " Name"
+    };
+    text(
+        output,
+        x,
+        layout.header_row,
+        width,
+        name_header,
+        Style::Header,
+    )?;
     if width >= 28 {
+        let size_header = if pane.sort_mode == SortMode::Size {
+            "Size ^"
+        } else {
+            "Size"
+        };
         text(
             output,
             x + width - 12,
             layout.header_row,
             11,
-            "Size",
+            size_header,
             Style::Header,
         )?;
     }
 
     for row in 0..layout.body_height {
         let index = pane.offset + usize::from(row);
-        let Some(entry) = pane.entries.get(index) else {
+        let Some(entry) = pane.visible_entry(index) else {
             text(output, x, layout.body_top + row, width, "", Style::File)?;
             continue;
         };
@@ -252,26 +282,36 @@ fn draw_pane(
         draw_entry(output, entry, x, layout.body_top + row, width, style)?;
     }
 
-    let summary = if active {
+    let mut summary = if active {
         pane.selected_entry()
             .map(|entry| match entry.kind {
                 EntryKind::Parent | EntryKind::Directory => format!(" {}  <DIR>", entry.name),
-                EntryKind::File => format!(" {}  {}", entry.name, format_size(entry.size)),
+                EntryKind::File | EntryKind::Symlink | EntryKind::Other => {
+                    format!(" {}  {}", entry.name, format_size(entry.size))
+                }
             })
             .unwrap_or_default()
     } else {
         let directories = pane
-            .entries
+            .entries()
             .iter()
             .filter(|entry| entry.kind == EntryKind::Directory)
             .count();
         let files = pane
-            .entries
+            .entries()
             .iter()
-            .filter(|entry| entry.kind == EntryKind::File)
+            .filter(|entry| {
+                matches!(
+                    entry.kind,
+                    EntryKind::File | EntryKind::Symlink | EntryKind::Other
+                )
+            })
             .count();
         format!(" {files} files, {directories} dirs")
     };
+    if !pane.filter.is_empty() {
+        summary.push_str(&format!("  |  Filter: {}", pane.filter));
+    }
     text(
         output,
         x,
@@ -293,10 +333,10 @@ fn draw_entry(
     let glyph = match entry.kind {
         EntryKind::Parent => "↰",
         EntryKind::Directory => "◆",
-        EntryKind::File => " ",
+        EntryKind::File | EntryKind::Symlink | EntryKind::Other => " ",
     };
     let suffix = if entry.is_directory() { "/" } else { "" };
-    let size = if entry.kind == EntryKind::File && width >= 28 {
+    let size = if !entry.is_directory() && width >= 28 {
         format_size(entry.size)
     } else {
         String::new()
@@ -488,6 +528,14 @@ mod tests {
         assert_eq!(
             command_for_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
             Some(Command::Quit)
+        );
+        assert_eq!(
+            command_for_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
+            Some(Command::HistoryBack)
+        );
+        assert_eq!(
+            command_for_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)),
+            Some(Command::HistoryForward)
         );
     }
 

@@ -1,6 +1,8 @@
-use crate::provider::{Capabilities, Entry, EntryKind, Provider};
+use crate::provider::{
+    Capabilities, Entry, EntryKind, ListOptions, Location, Provider, ResourceId, ResourceMetadata,
+};
 use std::cmp::Ordering;
-use std::fs::{self, File, Metadata, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -10,6 +12,43 @@ pub struct LocalProvider;
 impl LocalProvider {
     pub fn new() -> Self {
         Self
+    }
+
+    fn location_for_path(path: PathBuf) -> Location {
+        Location {
+            resource: Self::resource_for_path(&path),
+            display: path.to_string_lossy().into_owned(),
+        }
+    }
+
+    fn resource_for_path(path: &Path) -> ResourceId {
+        ResourceId::from_provider(path.to_string_lossy().into_owned())
+    }
+
+    fn path_for_resource(resource: &ResourceId) -> PathBuf {
+        PathBuf::from(resource.as_str())
+    }
+
+    fn path_for_location(location: &Location) -> PathBuf {
+        Self::path_for_resource(&location.resource)
+    }
+
+    fn metadata_for_path(path: &Path) -> io::Result<ResourceMetadata> {
+        let metadata = fs::symlink_metadata(path)?;
+        let kind = if metadata.file_type().is_symlink() {
+            EntryKind::Symlink
+        } else if metadata.is_dir() {
+            EntryKind::Directory
+        } else if metadata.is_file() {
+            EntryKind::File
+        } else {
+            EntryKind::Other
+        };
+        Ok(ResourceMetadata {
+            kind,
+            size: Some(metadata.len()),
+            modified: metadata.modified().ok(),
+        })
     }
 }
 
@@ -30,53 +69,56 @@ impl Provider for LocalProvider {
             .union(Capabilities::MKDIR)
             .union(Capabilities::DELETE)
             .union(Capabilities::RENAME)
-            .union(Capabilities::COPY)
     }
 
-    fn location(&self, input: &Path) -> io::Result<PathBuf> {
-        input.canonicalize()
+    fn resolve(&self, input: &str) -> io::Result<Location> {
+        Ok(Self::location_for_path(Path::new(input).canonicalize()?))
     }
 
-    fn parent(&self, location: &Path) -> io::Result<PathBuf> {
-        Ok(location.parent().unwrap_or(location).to_path_buf())
+    fn parent(&self, location: &Location) -> io::Result<Option<Location>> {
+        let path = Self::path_for_location(location);
+        Ok(path
+            .parent()
+            .filter(|parent| *parent != path)
+            .map(|parent| Self::location_for_path(parent.to_path_buf())))
     }
 
-    fn child(&self, location: &Path, name: &str) -> io::Result<PathBuf> {
-        Ok(location.join(name))
+    fn child(&self, location: &Location, name: &str) -> io::Result<Location> {
+        Ok(Self::location_for_path(
+            Self::path_for_location(location).join(name),
+        ))
     }
 
-    fn list(&self, location: &Path, show_hidden: bool) -> io::Result<Vec<Entry>> {
+    fn list(&self, location: &Location, options: &ListOptions) -> io::Result<Vec<Entry>> {
+        let path = Self::path_for_location(location);
         let mut entries = vec![Entry {
             name: "..".into(),
-            resource: location.to_path_buf(),
+            resource: location.resource.clone(),
             kind: EntryKind::Parent,
-            size: Some(0),
+            size: None,
             modified: None,
         }];
 
-        for candidate in fs::read_dir(location)? {
+        for candidate in fs::read_dir(path)? {
             let candidate = match candidate {
                 Ok(candidate) => candidate,
                 Err(_) => continue,
             };
             let name = candidate.file_name().to_string_lossy().into_owned();
-            if !show_hidden && name.starts_with('.') {
+            if !options.show_hidden && name.starts_with('.') {
                 continue;
             }
-            let metadata = match fs::symlink_metadata(candidate.path()) {
+            let path = candidate.path();
+            let metadata = match Self::metadata_for_path(&path) {
                 Ok(metadata) => metadata,
                 Err(_) => continue,
             };
             entries.push(Entry {
                 name,
-                resource: candidate.path(),
-                kind: if metadata.is_dir() {
-                    EntryKind::Directory
-                } else {
-                    EntryKind::File
-                },
-                size: Some(metadata.len()),
-                modified: metadata.modified().ok(),
+                resource: Self::resource_for_path(&path),
+                kind: metadata.kind,
+                size: metadata.size,
+                modified: metadata.modified,
             });
         }
 
@@ -84,42 +126,46 @@ impl Provider for LocalProvider {
         Ok(entries)
     }
 
-    fn stat(&self, resource: &Path) -> io::Result<Metadata> {
-        fs::symlink_metadata(resource)
+    fn stat(&self, resource: &ResourceId) -> io::Result<ResourceMetadata> {
+        Self::metadata_for_path(&Self::path_for_resource(resource))
     }
 
-    fn open_read(&self, resource: &Path) -> io::Result<Box<dyn Read + Send>> {
-        Ok(Box::new(File::open(resource)?))
+    fn open_read(&self, resource: &ResourceId) -> io::Result<Box<dyn Read + Send>> {
+        Ok(Box::new(File::open(Self::path_for_resource(resource))?))
     }
 
-    fn open_write(&self, resource: &Path, overwrite: bool) -> io::Result<Box<dyn Write + Send>> {
+    fn open_write(
+        &self,
+        resource: &ResourceId,
+        overwrite: bool,
+    ) -> io::Result<Box<dyn Write + Send>> {
         let file = OpenOptions::new()
             .write(true)
             .create_new(!overwrite)
             .create(overwrite)
             .truncate(overwrite)
-            .open(resource)?;
+            .open(Self::path_for_resource(resource))?;
         Ok(Box::new(file))
     }
 
-    fn mkdir(&self, resource: &Path) -> io::Result<()> {
-        fs::create_dir(resource)
+    fn mkdir(&self, resource: &ResourceId) -> io::Result<()> {
+        fs::create_dir(Self::path_for_resource(resource))
     }
 
-    fn delete(&self, resource: &Path) -> io::Result<()> {
-        if fs::symlink_metadata(resource)?.is_dir() {
-            fs::remove_dir(resource)
+    fn delete(&self, resource: &ResourceId) -> io::Result<()> {
+        let path = Self::path_for_resource(resource);
+        if fs::symlink_metadata(&path)?.is_dir() {
+            fs::remove_dir(path)
         } else {
-            fs::remove_file(resource)
+            fs::remove_file(path)
         }
     }
 
-    fn rename(&self, source: &Path, destination: &Path) -> io::Result<()> {
-        fs::rename(source, destination)
-    }
-
-    fn copy(&self, source: &Path, destination: &Path) -> io::Result<u64> {
-        fs::copy(source, destination)
+    fn rename(&self, source: &ResourceId, destination: &ResourceId) -> io::Result<()> {
+        fs::rename(
+            Self::path_for_resource(source),
+            Self::path_for_resource(destination),
+        )
     }
 }
 
@@ -128,14 +174,18 @@ fn compare_entries(left: &Entry, right: &Entry) -> Ordering {
         (EntryKind::Parent, EntryKind::Parent) => Ordering::Equal,
         (EntryKind::Parent, _) => Ordering::Less,
         (_, EntryKind::Parent) => Ordering::Greater,
-        (EntryKind::Directory, EntryKind::File) => Ordering::Less,
-        (EntryKind::File, EntryKind::Directory) => Ordering::Greater,
-        _ => left
-            .name
-            .to_lowercase()
-            .cmp(&right.name.to_lowercase())
-            .then_with(|| left.name.cmp(&right.name)),
+        (EntryKind::Directory, EntryKind::Directory) => compare_names(left, right),
+        (EntryKind::Directory, _) => Ordering::Less,
+        (_, EntryKind::Directory) => Ordering::Greater,
+        _ => compare_names(left, right),
     }
+}
+
+fn compare_names(left: &Entry, right: &Entry) -> Ordering {
+    left.name
+        .to_lowercase()
+        .cmp(&right.name.to_lowercase())
+        .then_with(|| left.name.cmp(&right.name))
 }
 
 #[cfg(test)]
@@ -155,24 +205,48 @@ mod tests {
     }
 
     #[test]
-    fn listing_matches_commander_order_and_hidden_policy() {
+    fn resources_resolve_and_parent_and_child_stay_provider_owned() {
+        let root = fixture();
+        fs::create_dir(root.join("child")).unwrap();
+        let provider = LocalProvider::new();
+        let location = provider.resolve(root.to_str().unwrap()).unwrap();
+        assert_eq!(
+            location.display,
+            root.canonicalize().unwrap().to_string_lossy()
+        );
+
+        let child = provider.child(&location, "child").unwrap();
+        assert_eq!(child.display, root.join("child").to_string_lossy());
+        let child = provider.resolve(&child.display).unwrap();
+        assert_eq!(provider.parent(&child).unwrap(), Some(location));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn listing_uses_navi8or_metadata_and_commander_order() {
         let root = fixture();
         fs::create_dir(root.join("Zulu")).unwrap();
         fs::create_dir(root.join("alpha")).unwrap();
         fs::write(root.join("beta.txt"), b"beta").unwrap();
         fs::write(root.join(".secret"), b"hidden").unwrap();
         let provider = LocalProvider::new();
+        let location = provider.resolve(root.to_str().unwrap()).unwrap();
 
-        let names: Vec<_> = provider
-            .list(&root, false)
-            .unwrap()
-            .into_iter()
-            .map(|entry| entry.name)
-            .collect();
+        let entries = provider.list(&location, &ListOptions::default()).unwrap();
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
         assert_eq!(names, ["..", "alpha", "Zulu", "beta.txt"]);
+        let file = entries
+            .iter()
+            .find(|entry| entry.name == "beta.txt")
+            .unwrap();
+        assert_eq!(file.kind, EntryKind::File);
+        assert_eq!(file.size, Some(4));
+        assert_eq!(provider.stat(&file.resource).unwrap().kind, EntryKind::File);
+
         assert!(
             provider
-                .list(&root, true)
+                .list(&location, &ListOptions { show_hidden: true })
                 .unwrap()
                 .iter()
                 .any(|entry| entry.name == ".secret")

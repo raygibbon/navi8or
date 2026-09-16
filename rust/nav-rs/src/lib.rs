@@ -8,6 +8,8 @@ pub mod local;
 pub mod provider;
 pub mod terminal;
 
-pub use app::{AppState, Command, Pane};
+pub use app::{AppState, Command, Pane, SortMode};
 pub use local::LocalProvider;
-pub use provider::{Capabilities, Entry, EntryKind, Provider};
+pub use provider::{
+    Capabilities, Entry, EntryKind, ListOptions, Location, Provider, ResourceId, ResourceMetadata,
+};

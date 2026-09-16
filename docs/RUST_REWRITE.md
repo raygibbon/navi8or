@@ -13,26 +13,38 @@ make rust-check
 ## Implemented architecture
 
 - `AppState` owns two independent panes, focus, status and command dispatch.
-- `Pane` owns a provider-backed location, listing, selection and viewport.
-- `Provider` describes capabilities and filesystem-style operations without a C
-  vtable or UI/runtime dependency.
+- `Pane` owns a provider-backed `Location`, listing, selection, filter, sort
+  mode, history and viewport without knowing how resource identities are encoded.
+- `Provider` describes operations using opaque `ResourceId` values and
+  Navi8or-owned `Entry`/`ResourceMetadata` types without a C vtable,
+  filesystem type, or UI/runtime dependency.
 - `LocalProvider` implements listing and the local primitives needed by later
-  file-operation jobs.
+  file-operation jobs. It is the only layer that translates resources into
+  `PathBuf` values or reads `std::fs` metadata.
 - `terminal` owns Crossterm startup/shutdown, keyboard and resize events, and
   Navi8or-specific DOS-style rendering.
 
 The intended long-operation boundary remains `UI -> commands/jobs -> providers
--> I/O`. No async runtime is present yet because this milestone performs no
-network or transfer work. A future job service can own async execution while
-the UI consumes progress/result messages synchronously.
+-> I/O`. Copy is deliberately not a provider operation: future transfers will
+combine a source provider/resource with a destination provider/resource, with
+any server-side copy exposed only as an optimization. No async runtime is
+present because this milestone performs no network or transfer work.
+
+The event loop polls Crossterm with a bounded timeout, redraws only after state
+changes, and invokes a non-blocking background-service hook. A future channel-
+backed job service can therefore deliver progress/results without coupling the
+UI to Tokio or leaving input blocked indefinitely.
 
 ## Current behavior
 
 The two panes start in the supplied directories (or the current directory),
 hide dot files, sort `..` first and directories before files, and keep selection
 visible. Arrow keys, Home/End, Page Up/Down, Enter, Backspace, Tab, Ctrl+R,
-Ctrl+Q and F10 provide the initial navigation and lifecycle controls. Resize
-events recompute pane geometry and redraw the screen.
+Ctrl+Q and F10 provide the initial navigation and lifecycle controls. Alt+Left
+and Alt+Right traverse pane history, while Ctrl+U swaps panes. Provider-neutral
+sorting and filtering preserve selection; refresh and hidden-file changes retain
+the selected resource when it remains visible. Resize events recompute pane
+geometry and redraw the screen.
 
 Opening a regular file reports that the Viewer is deferred. F3/F4 and file
 copy/move/delete/mkdir commands are displayed for visual continuity but are not
@@ -56,4 +68,3 @@ dual-license expressions. The reviewed packages are `bitflags`, `cfg-if`,
 `signal-hook-registry`, `smallvec`, `wasi`, `winapi`, its GNU architecture
 packages, `windows-link`, and `windows-sys`. No GPL, AGPL or LGPL crate is in
 the Rust dependency graph.
-

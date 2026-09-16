@@ -1,6 +1,5 @@
 use nav_rs::{AppState, LocalProvider, Pane, Provider, terminal};
 use std::env;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -31,14 +30,17 @@ fn run() -> Result<(), (u8, String)> {
         } else if options && argument.starts_with('-') {
             return Err((2, format!("unknown option: {argument}")));
         } else {
-            locations.push(PathBuf::from(argument));
+            locations.push(argument);
         }
     }
     if locations.len() > 2 {
         return Err((2, "too many directories".into()));
     }
 
-    let current = env::current_dir().map_err(|error| (1, error.to_string()))?;
+    let current = env::current_dir()
+        .map_err(|error| (1, error.to_string()))?
+        .to_string_lossy()
+        .into_owned();
     let left = locations
         .first()
         .cloned()
@@ -46,9 +48,9 @@ fn run() -> Result<(), (u8, String)> {
     let right = locations.get(1).cloned().unwrap_or_else(|| current.clone());
     let provider: Arc<dyn Provider> = Arc::new(LocalProvider::new());
     let left = Pane::open(provider.clone(), &left, false)
-        .map_err(|error| (1, format!("{}: {error}", left.display())))?;
-    let right = Pane::open(provider, &right, false)
-        .map_err(|error| (1, format!("{}: {error}", right.display())))?;
+        .map_err(|error| (1, format!("{left}: {error}")))?;
+    let right =
+        Pane::open(provider, &right, false).map_err(|error| (1, format!("{right}: {error}")))?;
     let mut app = AppState::new([left, right]);
     terminal::run(&mut app).map_err(|error| (1, format!("terminal: {error}")))
 }
