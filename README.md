@@ -78,6 +78,11 @@ Windows: `make TARGET=windows windows-deps`, then `make TARGET=windows`
 uses MinGW-w64.
 See [Building](docs/BUILDING.md) and [Development](docs/DEVELOPMENT.md).
 
+An experimental, local-filesystem-only Rust core is built alongside the C
+application with `make rust` and run as `./nav-rs`. It does not replace `nav`;
+the Viewer and all remote/provider operations remain intentionally deferred.
+Run its tests with `make rust-check`. See [Rust rewrite](docs/RUST_REWRITE.md).
+
 ## License
 
 Navi8or is MIT licensed; see [LICENSE](LICENSE).

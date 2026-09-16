@@ -2,6 +2,8 @@
 build/
 dist/
 /nav
+/nav-rs
+/target/
 *.o
 *.d
 *.a

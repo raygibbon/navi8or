@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""PTY smoke test for the experimental Rust two-pane core."""
+import os
+from pathlib import Path
+import pty
+import sys
+import tempfile
+import time
+
+from resize_test import DOWN, drain, resize, stop_nav, wait_for_exit, write
+from terminal_screen import TerminalScreen
+
+
+def main():
+    executable = str(Path(sys.argv[1]).resolve())
+    with tempfile.TemporaryDirectory(prefix="nav-rs-") as temporary:
+        root = Path(temporary)
+        left = root / "left"
+        right = root / "right"
+        child = left / "child"
+        child.mkdir(parents=True)
+        right.mkdir()
+        (left / "sample.txt").write_text("viewer remains deferred\n")
+        (right / "other.txt").write_text("right pane\n")
+
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ["TERM"] = "xterm-256color"
+            os.execv(executable, [executable, str(left), str(right)])
+
+        exited = False
+        try:
+            resize(fd, 100, 30)
+            time.sleep(0.25)
+            screen = TerminalScreen(100, 30)
+            screen.feed(drain(fd))
+            initial = screen.text()
+            for expected in ("Local Filesystem", "sample.txt", "other.txt", "F10", "Quit"):
+                assert expected in initial, (expected, initial)
+
+            left_title_style = screen.cells[1][1][1]
+            right_title_style = screen.cells[1][52][1]
+            assert left_title_style != right_title_style
+            write(fd, b"\t", screen=screen)
+            assert screen.cells[1][1][1] == right_title_style
+            assert screen.cells[1][52][1] == left_title_style
+            write(fd, b"\t", screen=screen)
+
+            write(fd, DOWN, screen=screen)
+            write(fd, b"\r", screen=screen)
+            assert str(child) in screen.text(), screen.text()
+            write(fd, b"\x7f", screen=screen)
+            assert str(left) in screen.text(), screen.text()
+
+            resize(fd, 60, 15)
+            time.sleep(0.15)
+            resized = TerminalScreen(60, 15)
+            resized.feed(drain(fd))
+            assert "Local Filesystem" in resized.text(), resized.text()
+
+            write(fd, b"\x1b[21~")
+            wait_for_exit(pid, "nav-rs F10")
+            exited = True
+        finally:
+            stop_nav(pid, fd, exited)
+
+    print("nav-rs local panes, navigation, resize, pane switch, and clean exit: passed")
+
+
+if __name__ == "__main__":
+    main()
+

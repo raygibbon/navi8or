@@ -2,6 +2,24 @@ TARGET ?= native
 export PYTHONDONTWRITEBYTECODE := 1
 .DEFAULT_GOAL := all
 include cmake/version.mk
+
+RUST_MANIFEST := rust/nav-rs/Cargo.toml
+RUST_SOURCES := Cargo.toml Cargo.lock $(RUST_MANIFEST) $(shell find rust/nav-rs/src -name '*.rs' 2>/dev/null | sort)
+
+.PHONY: rust rust-check rust-clippy
+rust: nav-rs
+
+nav-rs: $(RUST_SOURCES)
+	cargo build --manifest-path $(RUST_MANIFEST)
+	cp target/debug/nav-rs $@
+
+rust-check: nav-rs
+	cargo test --workspace
+	python3 tests/nav_rs_integration_test.py ./nav-rs
+
+rust-clippy:
+	cargo clippy --workspace --all-targets -- -D warnings
+
 ifeq ($(TARGET),windows)
 include cmake/windows.mk
 else
@@ -318,7 +336,7 @@ asan-check:
 
 clean:
 	@test ! -d build || find build -mindepth 1 -maxdepth 1 ! -name linux-deps ! -name .linux-deps.lock ! -name windows -exec rm -rf {} +
-	rm -f nav
+	rm -f nav nav-rs
 
 endif
 include cmake/release.mk
