@@ -1,4 +1,4 @@
-use crate::job::{CopyRequest, JobId, JobManager, JobMessage};
+use crate::job::{CopyRequest, JobId, JobManager, JobMessage, ListRequest};
 use crate::provider::{
     Entry, EntryKind, ListOptions, Location, LocationInput, Provider, ResourceId,
 };
@@ -17,6 +17,35 @@ pub enum SortMode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
+    Help,
+    Menu,
+    CloseOverlay,
+    Left,
+    Right,
+    Accept,
+    Edit,
+    Move,
+    Rename,
+    Delete,
+    MkDir,
+    OpenLocation,
+    Filter,
+    RepositoryOpen,
+    RepositoryAdd,
+    RepositoryEdit,
+    RepositoryRemove,
+    Vault,
+    Brief,
+    Full,
+    OpenConfig,
+    ReloadConfig,
+    ThemeInfo,
+    Preferences,
+    Properties,
+    About,
+    ProfileSave,
+    ProfileSaveAs,
+    Deferred(&'static str),
     Up,
     Down,
     Home,
@@ -40,6 +69,37 @@ pub enum Command {
     Quit,
 }
 
+impl Command {
+    pub fn available(self) -> bool {
+        !matches!(
+            self,
+            Self::Deferred(_)
+                | Self::Edit
+                | Self::Move
+                | Self::Rename
+                | Self::Delete
+                | Self::MkDir
+                | Self::OpenLocation
+                | Self::Filter
+                | Self::RepositoryOpen
+                | Self::RepositoryAdd
+                | Self::RepositoryEdit
+                | Self::RepositoryRemove
+                | Self::Vault
+                | Self::Brief
+                | Self::Full
+                | Self::OpenConfig
+                | Self::ReloadConfig
+                | Self::ThemeInfo
+                | Self::Preferences
+                | Self::Properties
+                | Self::About
+                | Self::ProfileSave
+                | Self::ProfileSaveAs
+        )
+    }
+}
+
 pub struct Pane {
     provider: Arc<dyn Provider>,
     pub location: Location,
@@ -61,7 +121,11 @@ impl Pane {
         show_hidden: bool,
     ) -> io::Result<Self> {
         let location = provider.resolve(&input.into())?;
-        let entries = provider.list(&location, &ListOptions { show_hidden })?;
+        let entries = if provider.background_listing() {
+            Vec::new()
+        } else {
+            provider.list(&location, &ListOptions { show_hidden })?
+        };
         let mut pane = Self {
             provider,
             location: location.clone(),
@@ -220,6 +284,30 @@ impl Pane {
         Ok(())
     }
 
+    fn commit_listing(
+        &mut self,
+        location: Location,
+        mut entries: Vec<Entry>,
+        purpose: ListPurpose,
+    ) {
+        sort_entries(&mut entries, self.sort_mode);
+        let selected = if matches!(purpose, ListPurpose::Refresh) {
+            self.selected_entry().map(|entry| entry.resource.clone())
+        } else {
+            None
+        };
+        self.location = location;
+        self.entries = entries;
+        self.rebuild_visible_indices();
+        self.selected = 0;
+        self.offset = 0;
+        match purpose {
+            ListPurpose::Navigate => self.push_history(),
+            ListPurpose::History(index) => self.history_index = index,
+            ListPurpose::Refresh => self.restore_selection(selected.as_ref()),
+        }
+    }
+
     fn push_history(&mut self) {
         if self.history.get(self.history_index) == Some(&self.location) {
             return;
@@ -314,6 +402,19 @@ pub struct AppState {
     viewer_request: Option<ViewerRequest>,
     pub jobs: JobManager,
     copy_destination: Option<CopyDestination>,
+    pending_lists: [Option<PendingList>; 2],
+}
+
+#[derive(Clone, Copy)]
+enum ListPurpose {
+    Navigate,
+    History(usize),
+    Refresh,
+}
+
+struct PendingList {
+    id: JobId,
+    purpose: ListPurpose,
 }
 
 struct CopyDestination {
@@ -324,20 +425,99 @@ struct CopyDestination {
 
 impl AppState {
     pub fn new(panes: [Pane; 2]) -> Self {
-        Self {
+        Self::with_hidden(panes, false)
+    }
+
+    pub fn with_hidden(panes: [Pane; 2], show_hidden: bool) -> Self {
+        let mut app = Self {
             panes,
             active: 0,
             running: true,
-            show_hidden: false,
+            show_hidden,
             status: "Ready".into(),
             viewer_request: None,
             jobs: JobManager::default(),
             copy_destination: None,
+            pending_lists: [None, None],
+        };
+        for index in 0..2 {
+            if app.panes[index].provider.background_listing() {
+                let location = app.panes[index].location.clone();
+                if let Err(error) = app.request_list(index, location, ListPurpose::Refresh) {
+                    app.status = format!("Cannot list repository: {error}");
+                }
+            }
         }
+        app
     }
 
-    pub fn resize(&mut self, _width: u16, height: u16) {
-        let rows = usize::from(height.saturating_sub(7)).max(1);
+    fn request_list(
+        &mut self,
+        pane: usize,
+        location: Location,
+        purpose: ListPurpose,
+    ) -> io::Result<()> {
+        if let Some(pending) = self.pending_lists[pane].take() {
+            self.jobs.cancel_list(pending.id);
+        }
+        let id = self.jobs.start_list(ListRequest {
+            pane,
+            provider: self.panes[pane].provider.clone(),
+            location,
+            show_hidden: self.show_hidden,
+        })?;
+        self.pending_lists[pane] = Some(PendingList { id, purpose });
+        self.status = "Loading directory... (Esc to cancel)".into();
+        Ok(())
+    }
+
+    fn remote_navigation(&mut self, command: Command) -> io::Result<bool> {
+        let index = self.active;
+        let pane = &self.panes[index];
+        if !pane.provider.background_listing() {
+            return Ok(false);
+        }
+        let candidate = match command {
+            Command::Open => match pane.selected_entry() {
+                Some(entry) if entry.kind == EntryKind::Parent => pane
+                    .provider
+                    .parent(&pane.location)?
+                    .map(|location| (location, ListPurpose::Navigate)),
+                Some(entry) if entry.kind == EntryKind::Directory => Some((
+                    pane.provider.location(&entry.resource)?,
+                    ListPurpose::Navigate,
+                )),
+                _ => return Ok(false),
+            },
+            Command::Parent => pane
+                .provider
+                .parent(&pane.location)?
+                .map(|location| (location, ListPurpose::Navigate)),
+            Command::HistoryBack if pane.history_index > 0 => {
+                let position = pane.history_index - 1;
+                Some((
+                    pane.history[position].clone(),
+                    ListPurpose::History(position),
+                ))
+            }
+            Command::HistoryForward if pane.history_index + 1 < pane.history.len() => {
+                let position = pane.history_index + 1;
+                Some((
+                    pane.history[position].clone(),
+                    ListPurpose::History(position),
+                ))
+            }
+            Command::Refresh => Some((pane.location.clone(), ListPurpose::Refresh)),
+            Command::HistoryBack | Command::HistoryForward => None,
+            _ => return Ok(false),
+        };
+        if let Some((location, purpose)) = candidate {
+            self.request_list(index, location, purpose)?;
+        }
+        Ok(true)
+    }
+
+    pub fn set_viewport_rows(&mut self, rows: usize) {
         for pane in &mut self.panes {
             pane.set_viewport_rows(rows);
         }
@@ -348,6 +528,38 @@ impl AppState {
         let changed = !messages.is_empty();
         for message in messages {
             match message {
+                JobMessage::ListCompleted {
+                    id,
+                    location,
+                    entries,
+                    ..
+                } => {
+                    if let Some(pane) = self.pending_lists.iter().position(|pending| {
+                        pending.as_ref().is_some_and(|pending| pending.id == id)
+                    }) {
+                        let pending = self.pending_lists[pane]
+                            .take()
+                            .expect("matching pending list");
+                        self.panes[pane].commit_listing(location, entries, pending.purpose);
+                        self.status = "Directory loaded".into();
+                    }
+                }
+                JobMessage::ListFailed { id, error, .. } => {
+                    if let Some(pane) = self.pending_lists.iter().position(|pending| {
+                        pending.as_ref().is_some_and(|pending| pending.id == id)
+                    }) {
+                        self.pending_lists[pane] = None;
+                        self.status = format!("Directory load failed: {error}");
+                    }
+                }
+                JobMessage::ListCancelled { id, .. } => {
+                    if let Some(pane) = self.pending_lists.iter().position(|pending| {
+                        pending.as_ref().is_some_and(|pending| pending.id == id)
+                    }) {
+                        self.pending_lists[pane] = None;
+                        self.status = "Directory load cancelled".into();
+                    }
+                }
                 JobMessage::Started { total, .. } => {
                     self.status = total.map_or_else(
                         || "Copy started".into(),
@@ -408,13 +620,19 @@ impl AppState {
     }
 
     pub fn dispatch(&mut self, command: Command) {
+        if !command.available() {
+            self.status = format!("{command:?} unavailable in Rust");
+            return;
+        }
         match command {
+            Command::Help | Command::Menu | Command::CloseOverlay => return,
             Command::SwitchPane => {
                 self.active ^= 1;
                 return;
             }
             Command::SwapPanes => {
                 self.panes.swap(0, 1);
+                self.pending_lists.swap(0, 1);
                 if let Some(destination) = &mut self.copy_destination {
                     destination.pane ^= 1;
                 }
@@ -429,8 +647,17 @@ impl AppState {
             }
             Command::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
-                for pane in &mut self.panes {
-                    if let Err(error) = pane.refresh(self.show_hidden) {
+                for index in 0..2 {
+                    let result = if self.panes[index].provider.background_listing() {
+                        self.request_list(
+                            index,
+                            self.panes[index].location.clone(),
+                            ListPurpose::Refresh,
+                        )
+                    } else {
+                        self.panes[index].refresh(self.show_hidden)
+                    };
+                    if let Err(error) = result {
                         self.status = error.to_string();
                         break;
                     }
@@ -444,7 +671,10 @@ impl AppState {
                 return;
             }
             Command::CancelJob => {
-                self.status = if self.jobs.cancel_active() {
+                self.status = if let Some(pending) = self.pending_lists[self.active].take() {
+                    self.jobs.cancel_list(pending.id);
+                    "Directory load cancelled".into()
+                } else if self.jobs.cancel_active() {
                     "Cancelling copy...".into()
                 } else {
                     "No active job".into()
@@ -452,6 +682,15 @@ impl AppState {
                 return;
             }
             _ => {}
+        }
+
+        match self.remote_navigation(command) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                self.status = error.to_string();
+                return;
+            }
         }
 
         let pane = &mut self.panes[self.active];
@@ -532,7 +771,36 @@ impl AppState {
                 pane.set_sort_mode(SortMode::Modified);
                 Ok(())
             }
-            Command::SwitchPane
+            Command::Deferred(_)
+            | Command::Left
+            | Command::Right
+            | Command::Accept
+            | Command::Edit
+            | Command::Move
+            | Command::Rename
+            | Command::Delete
+            | Command::MkDir
+            | Command::OpenLocation
+            | Command::Filter
+            | Command::RepositoryOpen
+            | Command::RepositoryAdd
+            | Command::RepositoryEdit
+            | Command::RepositoryRemove
+            | Command::Vault
+            | Command::Brief
+            | Command::Full
+            | Command::OpenConfig
+            | Command::ReloadConfig
+            | Command::ThemeInfo
+            | Command::Preferences
+            | Command::Properties
+            | Command::About
+            | Command::ProfileSave
+            | Command::ProfileSaveAs
+            | Command::SwitchPane
+            | Command::Help
+            | Command::Menu
+            | Command::CloseOverlay
             | Command::SwapPanes
             | Command::ToggleHidden
             | Command::Copy
@@ -803,7 +1071,7 @@ mod tests {
         app.dispatch(Command::Copy);
         assert_eq!(app.status, "Copy queued");
         app.dispatch(Command::SwitchPane);
-        app.resize(80, 25);
+        app.set_viewport_rows(18);
         assert_eq!(app.active, 1, "copy must not block UI commands");
         app.dispatch(Command::SwitchPane);
         let deadline = Instant::now() + Duration::from_secs(3);

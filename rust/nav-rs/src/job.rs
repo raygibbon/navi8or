@@ -1,4 +1,6 @@
-use crate::provider::{Capabilities, Provider, ResourceId, WriteOptions};
+use crate::provider::{
+    Capabilities, Entry, ListOptions, Location, Provider, ResourceId, WriteOptions,
+};
 use crate::transfer::{TransferOutcome, copy_stream};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,8 +46,31 @@ pub struct CopyRequest {
     pub current_item: String,
 }
 
+#[derive(Clone)]
+pub struct ListRequest {
+    pub pane: usize,
+    pub provider: Arc<dyn Provider>,
+    pub location: Location,
+    pub show_hidden: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JobMessage {
+    ListCompleted {
+        id: JobId,
+        pane: usize,
+        location: Location,
+        entries: Vec<Entry>,
+    },
+    ListFailed {
+        id: JobId,
+        pane: usize,
+        error: String,
+    },
+    ListCancelled {
+        id: JobId,
+        pane: usize,
+    },
     Started {
         id: JobId,
         total: Option<u64>,
@@ -77,6 +102,7 @@ pub struct JobManager {
     progress_receiver: mpsc::Receiver<JobMessage>,
     jobs: Vec<JobInfo>,
     active: Option<ActiveJob>,
+    list_active: Vec<ActiveJob>,
 }
 
 impl Default for JobManager {
@@ -91,11 +117,64 @@ impl Default for JobManager {
             progress_receiver,
             jobs: Vec::new(),
             active: None,
+            list_active: Vec::new(),
         }
     }
 }
 
 impl JobManager {
+    pub fn start_list(&mut self, request: ListRequest) -> io::Result<JobId> {
+        let id = JobId(self.next_id);
+        self.next_id += 1;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let sender = self.reliable_sender.clone();
+        let handle = thread::Builder::new()
+            .name(format!("nav-list-{}", id.0))
+            .spawn(move || {
+                let result = request.provider.list_cancellable(
+                    &request.location,
+                    &ListOptions {
+                        show_hidden: request.show_hidden,
+                    },
+                    &worker_cancelled,
+                );
+                let message = if worker_cancelled.load(Ordering::Relaxed) {
+                    JobMessage::ListCancelled {
+                        id,
+                        pane: request.pane,
+                    }
+                } else {
+                    match result {
+                        Ok(entries) => JobMessage::ListCompleted {
+                            id,
+                            pane: request.pane,
+                            location: request.location,
+                            entries,
+                        },
+                        Err(error) => JobMessage::ListFailed {
+                            id,
+                            pane: request.pane,
+                            error: error.to_string(),
+                        },
+                    }
+                };
+                let _ = sender.send(message);
+            })?;
+        self.list_active.push(ActiveJob {
+            id,
+            cancelled,
+            handle,
+        });
+        Ok(id)
+    }
+
+    pub fn cancel_list(&self, id: JobId) {
+        if let Some(active) = self.list_active.iter().find(|active| active.id == id) {
+            active.cancelled.store(true, Ordering::Relaxed);
+        }
+    }
+
     pub fn start_copy(&mut self, request: CopyRequest) -> io::Result<JobId> {
         if self.active.is_some() {
             return Err(io::Error::new(
@@ -182,7 +261,7 @@ impl JobManager {
             .chain(self.reliable_receiver.try_iter())
             .collect();
         for message in pending {
-            if self.apply(&message) {
+            if message.is_list() || self.apply(&message) {
                 if message.is_terminal() {
                     self.join_finished(message.id());
                 }
@@ -193,8 +272,21 @@ impl JobManager {
     }
 
     pub fn shutdown(&mut self) -> io::Result<()> {
+        for active in &self.list_active {
+            active.cancelled.store(true, Ordering::Relaxed);
+        }
+        let mut listing_panicked = false;
+        for active in self.list_active.drain(..) {
+            if active.handle.join().is_err() {
+                listing_panicked = true;
+            }
+        }
         let Some(active) = self.active.take() else {
-            return Ok(());
+            return if listing_panicked {
+                Err(io::Error::other("listing worker panicked during shutdown"))
+            } else {
+                Ok(())
+            };
         };
         active.cancelled.store(true, Ordering::Relaxed);
         let id = active.id;
@@ -227,10 +319,18 @@ impl JobManager {
                 "copy worker exited without a terminal state",
             ));
         }
-        Ok(())
+        if listing_panicked {
+            Err(io::Error::other("listing worker panicked during shutdown"))
+        } else {
+            Ok(())
+        }
     }
 
     fn join_finished(&mut self, id: JobId) {
+        if let Some(index) = self.list_active.iter().position(|active| active.id == id) {
+            let active = self.list_active.swap_remove(index);
+            let _ = active.handle.join();
+        }
         if self.active.as_ref().is_some_and(|active| active.id == id) {
             let active = self.active.take().expect("active job checked");
             let _ = active.handle.join();
@@ -273,6 +373,11 @@ impl JobManager {
                 info.error = Some(error.clone());
             }
             JobMessage::Cancelled(_) => info.state = JobState::Cancelled,
+            JobMessage::ListCompleted { .. }
+            | JobMessage::ListFailed { .. }
+            | JobMessage::ListCancelled { .. } => {
+                unreachable!("listing messages bypass copy job state")
+            }
         }
         true
     }
@@ -285,8 +390,17 @@ impl Drop for JobManager {
 }
 
 impl JobMessage {
+    fn is_list(&self) -> bool {
+        matches!(
+            self,
+            Self::ListCompleted { .. } | Self::ListFailed { .. } | Self::ListCancelled { .. }
+        )
+    }
     fn id(&self) -> JobId {
         match self {
+            Self::ListCompleted { id, .. }
+            | Self::ListFailed { id, .. }
+            | Self::ListCancelled { id, .. } => *id,
             Self::Started { id, .. }
             | Self::Progress { id, .. }
             | Self::Completed(id)
@@ -298,7 +412,12 @@ impl JobMessage {
     fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Completed(_) | Self::Failed { .. } | Self::Cancelled(_)
+            Self::Completed(_)
+                | Self::Failed { .. }
+                | Self::Cancelled(_)
+                | Self::ListCompleted { .. }
+                | Self::ListFailed { .. }
+                | Self::ListCancelled { .. }
         )
     }
 }
@@ -376,8 +495,8 @@ fn run_copy_inner(
     });
     match outcome {
         Ok(TransferOutcome::Completed(_)) => match session.finish() {
-            Ok(()) => JobMessage::Completed(id),
-            Err(error) => failure_after_abort(
+            crate::provider::FinishOutcome::Committed => JobMessage::Completed(id),
+            crate::provider::FinishOutcome::NotCommitted(error) => failure_after_abort(
                 id,
                 context(
                     &format!("finish destination {}", request.destination),
@@ -385,6 +504,13 @@ fn run_copy_inner(
                 ),
                 session.abort(),
             ),
+            crate::provider::FinishOutcome::CommitUnknown(error) => JobMessage::Failed {
+                id,
+                error: format!(
+                    "finish destination {}: {error}; remote commit state is unknown",
+                    request.destination
+                ),
+            },
         },
         Ok(TransferOutcome::Cancelled(_)) => match session.abort() {
             Ok(()) => JobMessage::Cancelled(id),
@@ -592,12 +718,14 @@ mod tests {
         finished: Arc<AtomicBool>,
         aborted: Arc<AtomicBool>,
         fail_write: bool,
+        finish_unknown: bool,
     }
 
     struct RecordingSession {
         finished: Arc<AtomicBool>,
         aborted: Arc<AtomicBool>,
         fail_write: bool,
+        finish_unknown: bool,
     }
 
     impl Write for RecordingSession {
@@ -615,9 +743,13 @@ mod tests {
     }
 
     impl WriteSession for RecordingSession {
-        fn finish(&mut self) -> io::Result<()> {
+        fn finish(&mut self) -> crate::provider::FinishOutcome {
             self.finished.store(true, Ordering::Relaxed);
-            Ok(())
+            if self.finish_unknown {
+                crate::provider::FinishOutcome::CommitUnknown(io::Error::other("lost response"))
+            } else {
+                crate::provider::FinishOutcome::Committed
+            }
         }
 
         fn abort(&mut self) -> io::Result<()> {
@@ -672,6 +804,7 @@ mod tests {
                 finished: self.finished.clone(),
                 aborted: self.aborted.clone(),
                 fail_write: self.fail_write,
+                finish_unknown: self.finish_unknown,
             }))
         }
     }
@@ -692,6 +825,7 @@ mod tests {
                     finished: finished.clone(),
                     aborted: aborted.clone(),
                     fail_write,
+                    finish_unknown: false,
                 }),
                 destination: ResourceId::from_provider("destination"),
                 current_item: "recording.bin".into(),
@@ -743,6 +877,23 @@ mod tests {
         );
         assert!(!finished.load(Ordering::Relaxed));
         assert!(aborted.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn unknown_commit_never_calls_abort() {
+        let (mut request, finished, aborted) = recording_request(128, false);
+        request.destination_provider = Arc::new(RecordingDestination {
+            finished: finished.clone(),
+            aborted: aborted.clone(),
+            fail_write: false,
+            finish_unknown: true,
+        });
+        let mut manager = JobManager::default();
+        manager.start_copy(request).unwrap();
+        let messages = wait_for_terminal(&mut manager);
+        assert!(messages.iter().any(|message| matches!(message, JobMessage::Failed { error, .. } if error.contains("commit state is unknown"))));
+        assert!(finished.load(Ordering::Relaxed));
+        assert!(!aborted.load(Ordering::Relaxed));
     }
 
     #[test]

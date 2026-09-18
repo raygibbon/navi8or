@@ -2,6 +2,7 @@ use std::any::Any;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Read, Write};
+use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
 
 /// Opaque identity meaningful only to the provider that created it.
@@ -123,7 +124,7 @@ pub struct ResourceMetadata {
     pub modified: Option<SystemTime>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Entry {
     pub name: String,
     pub resource: ResourceId,
@@ -149,9 +150,21 @@ pub struct WriteOptions {
     pub total: Option<u64>,
 }
 
+/// Result of finalizing a destination. An error after a remote server has
+/// received the request may not prove that it rejected the write.
+#[derive(Debug)]
+pub enum FinishOutcome {
+    Committed,
+    NotCommitted(io::Error),
+    CommitUnknown(io::Error),
+}
+
 /// A destination write that must be explicitly committed or aborted.
+///
+/// `abort` is valid after a write failure or `NotCommitted`. It must not be
+/// called after `Committed` or `CommitUnknown`: the destination may exist.
 pub trait WriteSession: Write + Send {
-    fn finish(&mut self) -> io::Result<()>;
+    fn finish(&mut self) -> FinishOutcome;
     fn abort(&mut self) -> io::Result<()>;
 }
 
@@ -164,6 +177,10 @@ pub trait Provider: Any + Send + Sync {
     fn scheme(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
     fn capabilities(&self) -> Capabilities;
+    /// Whether listing should be scheduled off the UI thread.
+    fn background_listing(&self) -> bool {
+        false
+    }
 
     fn resolve(&self, input: &LocationInput) -> io::Result<Location>;
     fn location(&self, resource: &ResourceId) -> io::Result<Location>;
@@ -173,6 +190,14 @@ pub trait Provider: Any + Send + Sync {
         Err(unsupported("resource name"))
     }
     fn list(&self, location: &Location, options: &ListOptions) -> io::Result<Vec<Entry>>;
+    fn list_cancellable(
+        &self,
+        location: &Location,
+        options: &ListOptions,
+        _cancelled: &AtomicBool,
+    ) -> io::Result<Vec<Entry>> {
+        self.list(location, options)
+    }
 
     fn stat(&self, _resource: &ResourceId) -> io::Result<ResourceMetadata> {
         Err(unsupported("stat"))

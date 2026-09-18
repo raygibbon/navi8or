@@ -78,12 +78,15 @@ Windows: `make TARGET=windows windows-deps`, then `make TARGET=windows`
 uses MinGW-w64.
 See [Building](docs/BUILDING.md) and [Development](docs/DEVELOPMENT.md).
 
-An experimental, local-filesystem-only Rust core is built alongside the C
-application with `make rust` and run as `./nav-rs`. It does not replace `nav`;
-F3 delegates local regular files to the existing C Viewer through a standalone
-helper, and F5 runs a provider-streamed local copy job into the opposite pane.
-Remote providers remain intentionally deferred. Run its tests with
-`make rust-check`. See [Rust rewrite](docs/RUST_REWRITE.md).
+An experimental Rust core can be built with `cargo build --workspace` or
+`make rust` and run as `./nav-rs` (or with Cargo). It does not replace `nav`.
+Its owned terminal backend renders a framed two-pane UI using the existing
+Navi8or TOML profiles and key bindings; use `-i themes/classic-dos.toml` for
+Classic DOS. It browses local files and HTTP/HTTPS indexes, with background
+remote listing and streamed local-to-local or HTTP-to-local F5 downloads. F3
+uses the optional C Viewer helper. HTTP upload, vault-backed authentication,
+remote Viewer, and SMB remain deferred. Run tests with `make rust-check`. See
+[Rust rewrite](docs/RUST_REWRITE.md).
 
 ## License
 

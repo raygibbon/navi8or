@@ -1,6 +1,6 @@
 use crate::provider::{
-    Capabilities, Entry, EntryKind, ListOptions, Location, LocationInput, Provider, ResourceId,
-    ResourceMetadata, ResourceName, WriteOptions, WriteSession,
+    Capabilities, Entry, EntryKind, FinishOutcome, ListOptions, Location, LocationInput, Provider,
+    ResourceId, ResourceMetadata, ResourceName, WriteOptions, WriteSession,
 };
 use std::cmp::Ordering;
 use std::fs::{self, File, OpenOptions};
@@ -32,25 +32,35 @@ impl Write for LocalWriteSession {
 }
 
 impl WriteSession for LocalWriteSession {
-    fn finish(&mut self) -> io::Result<()> {
+    fn finish(&mut self) -> FinishOutcome {
         if self.finished {
-            return Err(io::Error::new(
+            return FinishOutcome::NotCommitted(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "write session is already finished",
             ));
         }
-        self.file_mut()?.flush()?;
+        if let Err(error) = self.file_mut().and_then(Write::flush) {
+            return FinishOutcome::NotCommitted(error);
+        }
         drop(self.file.take());
-        if self.overwrite {
-            fs::rename(&self.temporary, &self.destination)?;
-        } else {
-            // Hard-link creation fails atomically if another writer won the name.
-            fs::hard_link(&self.temporary, &self.destination)?;
-            // Once linked, the destination is committed even if this cleanup fails.
-            let _ = fs::remove_file(&self.temporary);
+        if let Err(error) = publish(&self.temporary, &self.destination, self.overwrite) {
+            // Network filesystems can report an I/O error after applying a
+            // rename/link. Preserve the temporary file and surface uncertainty.
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists
+                    | io::ErrorKind::NotFound
+                    | io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::InvalidInput
+                    | io::ErrorKind::Unsupported
+            ) {
+                self.finished = true;
+                return FinishOutcome::CommitUnknown(error);
+            }
+            return FinishOutcome::NotCommitted(error);
         }
         self.finished = true;
-        Ok(())
+        FinishOutcome::Committed
     }
 
     fn abort(&mut self) -> io::Result<()> {
@@ -83,6 +93,71 @@ impl Drop for LocalWriteSession {
             drop(self.file.take());
             let _ = fs::remove_file(&self.temporary);
         }
+    }
+}
+
+/// Atomically publish a complete same-directory temporary file. Linux has a
+/// no-replace rename primitive, so no hard-link support is needed there.
+fn publish(temporary: &Path, destination: &Path, overwrite: bool) -> io::Result<()> {
+    if overwrite {
+        return fs::rename(temporary, destination);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let source = std::ffi::CString::new(temporary.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let target = std::ffi::CString::new(destination.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: both C strings are NUL terminated and live for the call.
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                target.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        // Older kernels or filesystems may not implement renameat2. A link
+        // fallback remains atomic when supported; otherwise fail safely.
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
+        ) {
+            return Err(error);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn MoveFileW(source: *const u16, destination: *const u16) -> i32;
+        }
+        let mut source: Vec<u16> = temporary.as_os_str().encode_wide().collect();
+        let mut target: Vec<u16> = destination.as_os_str().encode_wide().collect();
+        if source.contains(&0) || target.contains(&0) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        source.push(0);
+        target.push(0);
+        // SAFETY: both paths are NUL-terminated and live for the call.
+        if unsafe { MoveFileW(source.as_ptr(), target.as_ptr()) } != 0 {
+            return Ok(());
+        }
+        Err(io::Error::last_os_error())
+    }
+    #[cfg(not(windows))]
+    {
+        fs::hard_link(temporary, destination)?;
+        // Destination is already committed. Temporary cleanup is best-effort.
+        let _ = fs::remove_file(temporary);
+        Ok(())
     }
 }
 
@@ -491,7 +566,7 @@ mod tests {
             )
             .unwrap();
         writer.write_all(&copied).unwrap();
-        writer.finish().unwrap();
+        assert!(matches!(writer.finish(), FinishOutcome::Committed));
         assert_eq!(
             fs::read(LocalProvider::path_for_resource(&destination)).unwrap(),
             bytes
@@ -511,9 +586,8 @@ mod tests {
             .unwrap();
         writer.write_all(b"incoming").unwrap();
         fs::write(LocalProvider::path_for_resource(&raced), b"winner").unwrap();
-        assert_eq!(
-            writer.finish().unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
+        assert!(
+            matches!(writer.finish(), FinishOutcome::NotCommitted(error) if error.kind() == io::ErrorKind::AlreadyExists)
         );
         writer.abort().unwrap();
         assert_eq!(

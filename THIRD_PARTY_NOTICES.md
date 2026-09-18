@@ -2,7 +2,9 @@
 
 Navi8or is MIT licensed (root LICENSE restored from the initial project commit).
 The following dependencies retain their own licenses. Required full license and
-copyright notices are reproduced below, not replaced by a summary.
+copyright notices for bundled C dependencies are reproduced below, not replaced
+by a summary. Rust crate source archives retain their own license files; a
+future Rust binary distribution must collect those notices from `Cargo.lock`.
 
 | Dependency | Exact source used | Upstream | License |
 | --- | --- | --- | --- |
@@ -13,11 +15,16 @@ copyright notices are reproduced below, not replaced by a summary.
 | libsmb2 | 7.0.0, b3d560c02fb1268320d2fd1c17fe841b0d93b85f, both platforms | https://github.com/sahlberg/libsmb2 | library LGPL-2.1-or-later; embedded RSA MD4 notice below |
 | OpenSSL | Linux 3.5.8; Windows curl uses system Schannel, not OpenSSL | https://openssl-library.org | Apache-2.0; embedded notices below |
 | zlib | Linux 1.3.2; not linked on Windows | https://zlib.net | zlib |
+| Rust crates (`unicode-width`, `ureq`, `native-tls`, `url`, `html-escape`, `percent-encoding`, `base64`, `toml`, `libc` and locked transitive dependencies) | Versions and checksums in `Cargo.lock`; registry source archives | https://crates.io | MIT, Apache-2.0, BSD, ISC, OpenSSL, and other permissive license expressions as declared by each crate |
 
 Pins/checksums are defined by scripts/build-linux-deps.sh and
 scripts/build-windows-deps.sh. Vendored files and patches are in third_party/.
 No upstream tomlc99 commit is invented: the exact published vendored bytes are
 identified above. Full upstream source notices remain in those sources.
+The experimental `nav-rs` uses `native-tls`: it links the platform TLS library
+(OpenSSL on Linux, system TLS on Windows) rather than bundling its own TLS
+implementation. Cargo package licenses were checked against the resolved
+metadata; no GPL/AGPL/LGPL Rust crate was introduced by this HTTP milestone.
 
 ## Static libsmb2 distribution
 

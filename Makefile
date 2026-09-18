@@ -11,11 +11,13 @@ rust: nav-rs
 
 nav-rs: $(RUST_SOURCES)
 	cargo build --manifest-path $(RUST_MANIFEST)
-	cp target/debug/nav-rs $@
+	@temp=$$(mktemp ./.nav-rs.XXXXXX); trap 'rm -f "$$temp"' EXIT; \
+		cp target/debug/nav-rs "$$temp"; chmod 755 "$$temp"; mv -f "$$temp" $@
 
 rust-check: nav-rs
 	cargo test --workspace
 	python3 tests/nav_rs_integration_test.py ./nav-rs
+	python3 tests/nav_rs_http_integration_test.py ./nav-rs
 
 rust-clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
@@ -207,11 +209,17 @@ verify-libsmb2:
 		exit 1; }
 
 DIST_ARCHIVE := build/release/navi8or-source.tar.gz
+DIST_ZIP := build/release/navi8or-source.zip
 
 dist: verify-vendor
 	python3 scripts/release.py source
 
+.PHONY: source-snapshot
+source-snapshot: dist
+	cp $(DIST_ZIP) Archive.zip
+
 dist-check: dist
+	python3 -c 'import zipfile; z=zipfile.ZipFile("$(DIST_ZIP)"); n=set(z.namelist()); assert "navi8or/include/nav.h" in n and "navi8or/third_party/termbox2/termbox2.h" in n and "navi8or/rust/nav-rs/src/terminal/unix.rs" in n; assert not any("__pycache__" in p for p in n)'
 	set -eu; temp=$$(mktemp -d); trap 'rm -rf "$$temp"' EXIT; \
 	tar -xzf "$(DIST_ARCHIVE)" -C "$$temp"; \
 	test -s "$$temp/navi8or/third_party/termbox2/termbox2.h"; \
@@ -222,8 +230,14 @@ dist-check: dist
 	test -s "$$temp/navi8or/LICENSE"; \
 	test -s "$$temp/navi8or/THIRD_PARTY_NOTICES.md"; \
 	test -s "$$temp/navi8or/docs/BUILDING.md"; \
+	test -s "$$temp/navi8or/Cargo.toml"; \
+	test -s "$$temp/navi8or/Cargo.lock"; \
+	test -s "$$temp/navi8or/rust/nav-rs/src/http.rs"; \
+	test -s "$$temp/navi8or/include/nav.h"; \
 	! test -e "$$temp/navi8or/build"; \
 	! test -e "$$temp/navi8or/nav"; \
+	$(MAKE) -C "$$temp/navi8or" viewer-helper; \
+	$(MAKE) -C "$$temp/navi8or" rust-check; \
 	$(MAKE) -C "$$temp/navi8or" check
 
 ifeq ($(USE_LINUX_DEPS),1)

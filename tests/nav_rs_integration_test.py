@@ -22,6 +22,7 @@ def main():
         right.mkdir()
         sample = left / "sample.txt"
         sample.write_text("legacy C Viewer handoff\n")
+        (left / ".hidden.txt").write_text("hidden\n")
         (right / "other.txt").write_text("right pane\n")
 
         pid, fd = pty.fork()
@@ -38,6 +39,26 @@ def main():
             initial = screen.text()
             for expected in ("Local Filesystem", "sample.txt", "other.txt", "F10", "Quit"):
                 assert expected in initial, (expected, initial)
+            assert ".hidden.txt" not in initial
+            write(fd, b"\x1bOP", delay=0.6, screen=screen)  # F1 Help
+            assert "Navi8or keys" in screen.text(), screen.text()
+            write(fd, b"\x1b", delay=0.25, screen=screen)
+            write(fd, b"\x1c", screen=screen)  # Ctrl+\ terminal byte
+            assert "Enter URL / Location..." in screen.text(), screen.text()
+            file_style = screen.cells[0][1][1]
+            write(fd, b"\x1b[C", screen=screen)  # Right: View
+            assert "Show Hidden" in screen.text(), screen.text()
+            assert screen.cells[0][1][1] != file_style, screen.text()
+            write(fd, b"\x1b", delay=0.25, screen=screen)
+            assert "Show Hidden" not in screen.text(), screen.text()
+            write(fd, b"\x1bOQ", screen=screen)  # F2 Menu
+            assert "Show Hidden" in screen.text(), screen.text()  # remembered View
+            write(fd, b"h", screen=screen)
+            assert ".hidden.txt" in screen.text(), screen.text()
+            write(fd, b"\x1bOQ", screen=screen)
+            assert "Show Hidden" in screen.text(), screen.text()
+            write(fd, b"h", screen=screen)
+            assert ".hidden.txt" not in screen.text(), screen.text()
 
             left_title_style = screen.cells[1][1][1]
             right_title_style = screen.cells[1][52][1]
@@ -85,6 +106,7 @@ def main():
             stop_nav(pid, fd, exited)
 
     viewer_during_copy(executable)
+    classic_without_helper(executable)
     print("nav-rs navigation, C Viewer handoff, background copy, and exit: passed")
 
 
@@ -123,6 +145,33 @@ def viewer_during_copy(executable):
             assert returned.text().count("large.txt") >= 2, returned.text()
             write(fd, b"\x1b[21~")
             wait_for_exit(pid, "nav-rs Viewer during copy")
+            exited = True
+        finally:
+            stop_nav(pid, fd, exited)
+
+
+def classic_without_helper(executable):
+    profile = Path(__file__).resolve().parent.parent / "themes/classic-dos.toml"
+    with tempfile.TemporaryDirectory(prefix="nav-rs-classic-") as temporary:
+        root = Path(temporary)
+        (root / "sample.txt").write_text("sample\n")
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ["TERM"] = "xterm-256color"
+            os.environ["NAV_VIEWER_HELPER"] = str(root / "missing-viewer")
+            os.execv(executable, [executable, "-i", str(profile), str(root), str(root)])
+        exited = False
+        try:
+            resize(fd, 100, 30)
+            time.sleep(0.2)
+            screen = TerminalScreen(100, 30)
+            screen.feed(drain(fd))
+            assert "╔" in screen.text(), screen.text()
+            write(fd, DOWN, screen=screen)
+            write(fd, b"\x1bOR", delay=0.3, screen=screen)
+            assert "Viewer unavailable" in screen.text(), screen.text()
+            write(fd, b"\x1b[21~")
+            wait_for_exit(pid, "nav-rs classic without Viewer helper")
             exited = True
         finally:
             stop_nav(pid, fd, exited)

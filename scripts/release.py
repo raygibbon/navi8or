@@ -128,7 +128,8 @@ def source():
     base = fresh('source') / 'navi8or'
     base.mkdir()
     inputs = ('Makefile', 'VERSION', '.gitignore', '.github', 'cmake', 'scripts',
-              'include', 'src', 'tests', 'themes', 'third_party', 'docs') + DOCS
+              'include', 'src', 'tests', 'themes', 'third_party', 'docs',
+              'Cargo.toml', 'Cargo.lock', 'rust') + DOCS
     junk = {'.pyc', '.pyo', '.o', '.d', '.a', '.so', '.dll', '.exe', '.swp'}
     for name in inputs:
         path = ROOT / name
@@ -141,7 +142,8 @@ def source():
             shutil.copyfile(item, target)
             target.chmod(0o755 if os.access(item, os.X_OK) else 0o644)
     tar_archive(base, OUT / 'navi8or-source.tar.gz')
-    print('Filtered source distribution created')
+    zip_archive(base, OUT / 'navi8or-source.zip')
+    print('Filtered source distributions created')
 
 
 def toolchain_notices():
